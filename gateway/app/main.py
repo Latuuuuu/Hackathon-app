@@ -15,6 +15,7 @@ from .cloud import CloudError, Feedback, TaskRequest, make_cloud_client
 from .config import Settings, get_settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+log = logging.getLogger(__name__)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -24,9 +25,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         app.state.bt = BtClient(settings)
         app.state.cloud = make_cloud_client(settings, app.state.bt)
-        calib.ensure_field_file(settings)
+        # Calibration problems must not take the task/feedback features down with them.
+        app.state.calib_error = None
         app.state.calib = calib.make_calib_backend(settings)
-        app.state.calib.start()
+        try:
+            calib.ensure_field_file(settings)
+            app.state.calib.start()
+        except Exception as e:
+            app.state.calib_error = f"{e.__class__.__name__}: {e}"
+            log.error("calibration disabled: %s", app.state.calib_error)
         yield
         app.state.calib.stop()
         await app.state.cloud.aclose()
@@ -88,6 +95,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return calib.write_field(settings, cfg)
         except ValueError as e:
             raise HTTPException(422, str(e)) from e
+        except OSError as e:
+            raise HTTPException(503, f"cannot write {settings.field_file}: {e.strerror}") from e
 
     @app.get("/api/calib/state")
     async def calib_state(request: Request):
@@ -95,7 +104,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         run = calib.latest_run(settings)
         return {
             "mode": backend.mode,
-            "connected": backend.connected(),
+            "error": request.app.state.calib_error,
+            "connected": request.app.state.calib_error is None and backend.connected(),
             "running_since": backend.running_since,
             "latest_run": run.name if run else None,
             "streams": {s: (f[1] if (f := backend.frames.get(s)) else None) for s in calib.STREAMS},
@@ -103,6 +113,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/calib/run")
     async def calib_run(request: Request):
+        if request.app.state.calib_error:
+            raise HTTPException(503, f"calibration disabled: {request.app.state.calib_error}")
         try:
             return await request.app.state.calib.run()
         except calib.CalibBusy as e:

@@ -43,6 +43,9 @@ ros2 launch field_calib field_calib.launch.py \
 Gateway 第一次啟動時，如果這個檔案還不存在，會從 `src/field_calib/config/field.yaml` 複製一份。
 
 定位 repo 不在 `../Hackathon-vision-server-lacalization` 時，在 `.env` 設 `VISION_WS=<路徑>`。
+這個路徑或 `data/` 不存在時，`docker compose up` 會直接報錯 `bind source path does not exist`。這是刻意的：只有跟 field_calib 在同一台主機上，校正才會生效。
+
+如果讀寫不到校正檔案，Gateway 仍然會啟動，任務和回饋功能照常可用。校正頁會顯示錯誤，`GET /api/calib/state` 的 `error` 欄位會寫出原因。
 
 ## 本機開發（不需要機器人或 ROS）
 

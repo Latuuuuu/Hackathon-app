@@ -41,6 +41,10 @@ export function CalibrationPage() {
   useEffect(() => {
     api.getField().then(setField, (e) => setError(String(e.message ?? e)))
     api.calibResult().then(setCurrent, () => setCurrent(null))
+    api.calibState().then(
+      (s) => s.error && setError(`校正功能目前停用（Gateway 讀寫不到定位 server 的檔案）：${s.error}`),
+      () => undefined,
+    )
   }, [])
 
   async function saveField(e: React.FormEvent) {

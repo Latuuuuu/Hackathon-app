@@ -150,6 +150,21 @@ def test_field_file_seeded_on_startup(client, settings):
     assert data["table"] == {"length": 1.8, "depth": 0.6, "count": 2}
 
 
+def test_unwritable_field_file_keeps_gateway_up(settings, tmp_path):
+    blocker = tmp_path / "not_a_dir"
+    blocker.write_text("")
+    settings.field_file = blocker / "field_app.yaml"  # parent is a file: mkdir fails
+    with respx.mock:
+        respx.get(f"{BT}/health").mock(return_value=httpx.Response(200, json={"ok": True}))
+        with TestClient(create_app(settings)) as c:
+            assert c.get("/api/bt/health").status_code == 200
+            state = c.get("/api/calib/state").json()
+            assert state["error"] and state["connected"] is False
+            assert c.post("/api/calib/run").status_code == 503
+            body = {"length": 1.8, "depth": 0.6, "count": 1}
+            assert c.put("/api/calib/field", json=body).status_code == 503
+
+
 def test_field_write_keeps_tuning_keys(client, settings):
     r = client.put("/api/calib/field", json={"length": 1.2, "depth": 0.6, "count": 3, "disabled_segments": ["near"]})
     assert r.status_code == 200

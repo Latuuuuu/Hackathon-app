@@ -31,10 +31,12 @@ export function ConnectionBar() {
     }
   }, 5000)
 
-  const calibLight: Light = !calib ? 'bad' : calib.mode === 'mock' ? 'mock' : calib.connected ? 'ok' : 'bad'
+  const calibLight: Light = !calib || calib.error ? 'bad' : calib.mode === 'mock' ? 'mock' : calib.connected ? 'ok' : 'bad'
   const calibMsg = !calib
     ? '連不上 App Gateway'
-    : calib.mode === 'mock'
+    : calib.error
+      ? `校正功能停用：${calib.error}`
+      : calib.mode === 'mock'
       ? '校正模組為 mock 模式（沒有 ROS）'
       : calib.connected
         ? 'field_calib_node 已連線'

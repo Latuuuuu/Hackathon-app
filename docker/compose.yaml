@@ -24,6 +24,16 @@ services:
       - FIELD_TEMPLATE=/vision_ws/src/field_calib/config/field.yaml
       - CALIB_OUTPUT_DIR=/vision_ws/tools/calib/out/ros
     volumes:
-      - ${VISION_WS:-../../Hackathon-vision-server-lacalization}:/vision_ws
-      - ../data:/app/data
+      # Fail loudly instead of letting Docker create an empty root-owned folder
+      # when the localization repo is not on this host.
+      - type: bind
+        source: ${VISION_WS:-../../Hackathon-vision-server-lacalization}
+        target: /vision_ws
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ../data
+        target: /app/data
+        bind:
+          create_host_path: false
     restart: unless-stopped

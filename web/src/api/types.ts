@@ -97,6 +97,7 @@ export interface CalibRunResponse {
 
 export interface CalibState {
   mode: 'ros' | 'mock'
+  error: string | null
   connected: boolean
   running_since: number | null
   latest_run: string | null

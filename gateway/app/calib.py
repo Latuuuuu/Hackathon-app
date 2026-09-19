@@ -272,7 +272,7 @@ class RosCalibBackend(CalibBackend):
     async def _trigger(self) -> tuple[bool, str]:
         from std_srvs.srv import Trigger
 
-        if not self._client.wait_for_service(timeout_sec=2.0):
+        if self._client is None or not self._client.wait_for_service(timeout_sec=2.0):
             raise CalibUnavailable(f"service {self.settings.calib_service} not available")
         done = threading.Event()
         future = self._client.call_async(Trigger.Request())
