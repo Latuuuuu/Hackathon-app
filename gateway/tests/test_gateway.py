@@ -303,6 +303,14 @@ def test_result_and_images(client, settings):
     assert client.get("/api/calib/image/secret").status_code == 404
 
 
+def test_latest_run_and_frame_counts(client, settings):
+    assert client.get("/api/calib/runs/latest").status_code == 404
+    _seed_run(settings, "20260919_095507")
+    r = client.get("/api/calib/runs/latest").json()
+    assert r["run"] == "20260919_095507" and r["success"] is True and r["result"]["quality"]["rms_px"] == 0.6126
+    assert client.get("/api/calib/state").json()["frame_counts"] == {"live": 0, "calib": 0}
+
+
 def test_mock_run_reports_new_run_only(settings):
     class Fake(calib.MockCalibBackend):
         async def _trigger(self):

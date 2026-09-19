@@ -16,6 +16,7 @@ WORKDIR /app
 COPY gateway/requirements.txt gateway/requirements.txt
 RUN pip3 install --no-cache-dir -r gateway/requirements.txt
 COPY gateway/app gateway/app
+COPY docker/cyclonedds.xml /app/cyclonedds.xml
 COPY --from=web /web/dist web/dist
 
 ENV STATIC_DIR=/app/web/dist \

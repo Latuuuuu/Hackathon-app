@@ -1,13 +1,10 @@
-import { useEffect, useState } from 'react'
-import { ApiError, api } from '../api/client'
-import type { CalibResult, CalibRunResponse, FieldConfig } from '../api/types'
+import type { CalibResult, FieldConfig } from '../api/types'
 import { MjpegView } from '../components/MjpegView'
+import { type CalibStep, useCalibration } from '../lib/calibration'
 
 // Thresholds from field_calib param.yaml (calib.min_accept_ratio / calib.max_rms_px).
 const MIN_ACCEPT_RATIO = 0.6
 const MAX_RMS_PX = 1.5
-
-type Step = 'field' | 'capture' | 'result'
 
 function segmentNames(count: number): string[] {
   const names = ['far']
@@ -30,58 +27,42 @@ function segmentLabel(name: string): string {
 
 const deg = (rad: number) => ((rad * 180) / Math.PI).toFixed(2)
 
+const STEPS: { key: CalibStep; label: string }[] = [
+  { key: 'field', label: '桌子資訊' },
+  { key: 'capture', label: '校正畫面' },
+  { key: 'result', label: '校正結果' },
+]
+
+/** One progress bar for the three steps; informative only, not clickable. */
+function StepProgress({ step }: { step: CalibStep }) {
+  const idx = STEPS.findIndex((s) => s.key === step)
+  return (
+    <div className="progress" role="progressbar" aria-valuemin={1} aria-valuemax={STEPS.length} aria-valuenow={idx + 1}
+      aria-valuetext={`步驟 ${idx + 1}／${STEPS.length}：${STEPS[idx].label}`}>
+      <div className="progress-head">
+        <b>{STEPS[idx].label}</b>
+        <span className="muted">步驟 {idx + 1}／{STEPS.length}</span>
+      </div>
+      <div className="progress-track">
+        <div className="progress-fill" style={{ width: `${((idx + 1) / STEPS.length) * 100}%` }} />
+      </div>
+      <ol className="progress-labels">
+        {STEPS.map((s, i) => (
+          <li key={s.key} className={i < idx ? 'done' : i === idx ? 'on' : ''}>
+            {s.label}
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
 export function CalibrationPage() {
-  const [step, setStep] = useState<Step>('field')
-  const [field, setField] = useState<FieldConfig | null>(null)
-  const [current, setCurrent] = useState<CalibResult | null>(null)
-  const [run, setRun] = useState<CalibRunResponse | null>(null)
-  const [running, setRunning] = useState(false)
-  const [error, setError] = useState('')
-
-  useEffect(() => {
-    api.getField().then(setField, (e) => setError(String(e.message ?? e)))
-    api.calibResult().then(setCurrent, () => setCurrent(null))
-    api.calibState().then(
-      (s) => s.error && setError(`校正功能目前停用（Gateway 讀寫不到定位 server 的檔案）：${s.error}`),
-      () => undefined,
-    )
-  }, [])
-
-  async function saveField(e: React.FormEvent) {
-    e.preventDefault()
-    if (!field) return
-    setError('')
-    try {
-      setField(await api.putField(field))
-      setStep('capture')
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    }
-  }
-
-  async function startCalibration() {
-    setRunning(true)
-    setError('')
-    setRun(null)
-    try {
-      const res = await api.calibRun()
-      setRun(res)
-      if (res.success) api.calibResult().then(setCurrent, () => undefined)
-      setStep('result')
-    } catch (e) {
-      setError(e instanceof ApiError && e.status === 409 ? '已經有校正正在進行，請稍候。' : e instanceof Error ? e.message : String(e))
-    } finally {
-      setRunning(false)
-    }
-  }
+  const { step, field, current, run, running, error, setStep, setField, saveField, start } = useCalibration()
 
   return (
     <div className="page">
-      <ol className="steps">
-        <li className={step === 'field' ? 'on' : ''}>1. 桌子資訊</li>
-        <li className={step === 'capture' ? 'on' : ''}>2. 校正畫面</li>
-        <li className={step === 'result' ? 'on' : ''}>3. 校正結果</li>
-      </ol>
+      <StepProgress step={step} />
 
       {error && <p className="error">{error}</p>}
 
@@ -91,7 +72,14 @@ export function CalibrationPage() {
           {!field ? (
             <p className="muted">載入中…</p>
           ) : (
-            <FieldForm field={field} onChange={setField} onSubmit={saveField} />
+            <FieldForm
+              field={field}
+              onChange={setField}
+              onSubmit={(e) => {
+                e.preventDefault()
+                void saveField()
+              }}
+            />
           )}
           {current && <CurrentSummary result={current} />}
         </section>
@@ -111,14 +99,14 @@ export function CalibrationPage() {
           <MjpegView stream={running ? 'calib' : 'live'} alt={running ? '校正中偵測到的桌緣' : '即時桌緣疊圖'} />
           <p className="muted legend">
             {running
-              ? '校正中：每一輪會縮小搜尋範圍。綠點是採用的桌緣點，其他顏色是捨棄的點（對比不足、落在範圍邊界等）；灰線為本輪前的模型，彩色線為本輪結果。'
+              ? '校正中：每一輪會縮小搜尋範圍。綠點是採用的桌緣點，其他顏色是捨棄的點（對比不足、落在範圍邊界等）；灰線為本輪前的模型，彩色線為本輪結果。切換到其他頁面不會中斷校正。'
               : '即時畫面：線條為依目前外參投影的桌緣，應與實際桌緣重合。'}
           </p>
           <div className="row between">
             <button onClick={() => setStep('field')} disabled={running}>
               ← 修改桌子資訊
             </button>
-            <button className="primary" onClick={startCalibration} disabled={running}>
+            <button className="primary" onClick={() => void start()} disabled={running}>
               {running ? (
                 <>
                   <span className="spinner" /> 校正中…
@@ -139,10 +127,12 @@ export function CalibrationPage() {
           </div>
           {!run.success && <p>結果未套用，仍沿用先前的外參。可以依下方問題調整後重試。</p>}
           {run.result ? <ResultDetails result={run.result} runName={run.run} /> : <pre className="error-box">{run.message}</pre>}
-          <details>
-            <summary>校正程式完整訊息</summary>
-            <pre className="log">{run.message}</pre>
-          </details>
+          {run.message && (
+            <details>
+              <summary>校正程式完整訊息</summary>
+              <pre className="log">{run.message}</pre>
+            </details>
+          )}
           <div className="row between">
             <button onClick={() => setStep('field')}>修改桌子資訊</button>
             <button className="primary" onClick={() => setStep('capture')}>

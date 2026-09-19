@@ -148,6 +148,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "running_since": backend.running_since,
             "latest_run": run.name if run else None,
             "streams": {s: (f[1] if (f := backend.frames.get(s)) else None) for s in calib.STREAMS},
+            "frame_counts": {s: (f[0] if (f := backend.frames.get(s)) else 0) for s in calib.STREAMS},
         }
 
     @app.post("/api/calib/run")
@@ -162,6 +163,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(503, str(e)) from e
         except TimeoutError as e:
             raise HTTPException(504, str(e)) from e
+
+    @app.get("/api/calib/runs/latest")
+    async def calib_latest_run():
+        """Newest run, passed or not: lets a reloaded page pick up a calibration it started."""
+        run = calib.latest_run(settings)
+        if run is None:
+            raise HTTPException(404, "no calibration run yet")
+        res = calib.load_result(run / "cam_tf.yaml")
+        return {"run": run.name, "success": bool(res and res.get("passed")), "message": "", "result": res}
 
     @app.get("/api/calib/result")
     async def calib_result():

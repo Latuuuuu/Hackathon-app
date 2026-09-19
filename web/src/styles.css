@@ -146,9 +146,6 @@ legend { font-size: 0.85rem; color: var(--muted); margin-bottom: 6px; padding: 0
 .stars button { font-size: 1.6rem; padding: 0 6px; border: none; background: none; color: var(--border); min-height: 44px; }
 .stars button.on { color: #e3b341; }
 
-.steps { display: flex; list-style: none; padding: 0; margin: 0; gap: 6px; font-size: 0.85rem; }
-.steps li { flex: 1; text-align: center; padding: 6px; border-radius: 8px; background: var(--mute-bg); color: var(--muted); }
-.steps li.on { background: var(--primary); color: var(--primary-text); font-weight: 600; }
 
 .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
 @media (max-width: 480px) { .grid3 { grid-template-columns: 1fr 1fr; } }
@@ -192,3 +189,14 @@ tr.m-bad td { color: var(--danger); }
 .plan { margin: 8px 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 4px; }
 .warn-text { color: var(--warn); }
 .required { font-size: 0.75rem; color: var(--danger); margin-left: 4px; }
+
+/* calibration progress (informative, not buttons) */
+.progress { display: flex; flex-direction: column; gap: 6px; }
+.progress-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 0.95rem; }
+.progress-head .muted { font-size: 0.85rem; }
+.progress-track { height: 6px; border-radius: 999px; background: var(--mute-bg); overflow: hidden; }
+.progress-fill { height: 100%; background: var(--primary); border-radius: 999px; transition: width 0.3s ease; }
+.progress-labels { display: flex; justify-content: space-between; list-style: none; margin: 0; padding: 0; font-size: 0.8rem; color: var(--muted); }
+.progress-labels li.done { color: var(--text); }
+.progress-labels li.done::before { content: '✓ '; color: var(--ok); }
+.progress-labels li.on { color: var(--primary); font-weight: 600; }

@@ -85,6 +85,7 @@ export const api = {
   calibState: () => call<CalibState>('GET', '/api/calib/state'),
   calibRun: () => call<CalibRunResponse>('POST', '/api/calib/run'),
   calibResult: () => call<CalibResult>('GET', '/api/calib/result'),
+  calibLatestRun: () => call<CalibRunResponse>('GET', '/api/calib/runs/latest'),
 }
 
 /** Latest run, or null when bt_engine has never run a tree (it answers 404). */

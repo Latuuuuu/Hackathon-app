@@ -45,6 +45,8 @@ Gateway 第一次啟動時，如果這個檔案還不存在，會從 `src/field_
 定位 repo 不在 `../Hackathon-vision-server-localization` 時，在 `.env` 設 `VISION_WS=<路徑>`（相對於 repo 根目錄，或用絕對路徑）。**改了程式碼一定要加 `--build`**，否則會沿用舊 image。
 這個路徑或 `data/` 不存在時，`docker compose up` 會直接報錯 `bind source path does not exist`。這是刻意的：只有跟 field_calib 在同一台主機上，校正才會生效。
 
+Gateway 使用自己的 CycloneDDS 設定 [docker/cyclonedds.xml](docker/cyclonedds.xml)：field_calib 的疊圖一張約 4.3 MB，預設 2 MB 的接收緩衝區會讓每張都掉片段而整張作廢，所以把緩衝區請求調大（實際上限是主機的 `net.core.rmem_max`，目前 4 MB → 生效 8 MB）。`GET /api/calib/state` 的 `frame_counts` 可以看 Gateway 實際收到幾張。
+
 如果讀寫不到校正檔案，Gateway 仍然會啟動，任務和回饋功能照常可用。校正頁會顯示錯誤，`GET /api/calib/state` 的 `error` 欄位會寫出原因。
 
 ## 本機開發（不需要機器人或 ROS）

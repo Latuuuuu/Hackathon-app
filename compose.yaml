@@ -13,10 +13,11 @@ services:
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
     env_file: .env
     environment:
-      # Same DDS setup as the localization container.
+      # Same DDS domain as the localization container; own Cyclone config with a larger
+      # receive buffer for the ~4.3 MB overlay images (see docker/cyclonedds.xml).
       - ROS_DOMAIN_ID=0
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-      - CYCLONEDDS_URI=file:///vision_ws/config/cyclonedds.xml
+      - CYCLONEDDS_URI=file:///app/cyclonedds.xml
       - CALIB_MODE=ros
       # field_calib_node must be launched with
       #   field_file:=/home/vision/vision_ws/tools/calib/field_app.yaml

@@ -132,4 +132,5 @@ export interface CalibState {
   running_since: number | null
   latest_run: string | null
   streams: Record<'live' | 'calib', number | null>
+  frame_counts?: Record<'live' | 'calib', number>
 }

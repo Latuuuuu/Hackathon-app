@@ -1,13 +1,14 @@
 import { NavLink, Route, Routes } from 'react-router-dom'
 import { ConnectionBar } from './components/ConnectionBar'
 import { ErrorBoundary } from './components/ErrorBoundary'
+import { CalibrationProvider } from './lib/calibration'
 import { CalibrationPage } from './pages/CalibrationPage'
 import { FeedbackPage } from './pages/FeedbackPage'
 import { TaskPage } from './pages/TaskPage'
 
 export function App() {
   return (
-    <>
+    <CalibrationProvider>
       <header className="top">
         <h1>機器人控制台</h1>
         <ConnectionBar />
@@ -28,6 +29,6 @@ export function App() {
           </Routes>
         </ErrorBoundary>
       </main>
-    </>
+    </CalibrationProvider>
   )
 }
