@@ -3,8 +3,9 @@
 - Table size: field_calib_node re-reads its field YAML on every calibration, so the gateway
   writes FIELD_FILE and field_calib must be launched with field_file:=<same file>.
 - Trigger: std_srvs/Trigger on CALIB_SERVICE (blocks for several seconds).
-- Images: overlay topics (sensor_msgs/Image, ~1 Hz) re-encoded as JPEG, plus the camera's own
-  compressed stream (30 Hz, throttled and shrunk) for framing the table; all served as MJPEG.
+- Images: field_calib's overlays, preferring its compressed topics (live.compact: camera-size JPEG,
+  >= 10 Hz) and falling back to the raw Image topics when no compressed frame arrives; plus the
+  camera's own compressed stream (30 Hz, throttled and shrunk) for framing the table. All MJPEG.
 - Result: <output_dir>/<YYYYmmdd_HHMMSS>/cam_tf.yaml for every run, <output_dir>/cam_tf.yaml when it passed.
 """
 import asyncio
@@ -125,17 +126,33 @@ class CalibUnavailable(Exception):
     pass
 
 
+# How long a compressed frame keeps the raw topic of the same stream muted. Long enough to
+# bridge one missed frame at ~1 Hz, short enough to fall back quickly when compact is turned off.
+COMPRESSED_GRACE_S = 3.0
+
+
+def use_raw(last_compressed_at: float | None, now: float, grace: float = COMPRESSED_GRACE_S) -> bool:
+    """Raw overlays are only decoded while no compressed frame is coming in (field_calib without live.compact)."""
+    return last_compressed_at is None or now - last_compressed_at > grace
+
+
 class FrameBuffer:
     """Latest JPEG per stream, shared between the ROS thread and asyncio."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._frames: dict[str, tuple[int, float, bytes]] = {}
+        self._sources: dict[str, str] = {}
 
-    def put(self, stream: str, jpeg: bytes) -> None:
+    def put(self, stream: str, jpeg: bytes, source: str = "raw") -> None:
         with self._lock:
             seq = self._frames.get(stream, (0, 0.0, b""))[0] + 1
             self._frames[stream] = (seq, time.time(), jpeg)
+            self._sources[stream] = source
+
+    def source(self, stream: str) -> str | None:
+        with self._lock:
+            return self._sources.get(stream)
 
     def get(self, stream: str) -> tuple[int, float, bytes] | None:
         with self._lock:
@@ -226,10 +243,17 @@ class RosCalibBackend(CalibBackend):
         from std_srvs.srv import Trigger
 
         rclpy.init()
+        self._compressed_at: dict[str, float] = {}
         self._node = rclpy.create_node("hackathon_app_gateway")
         self._client = self._node.create_client(Trigger, self.settings.calib_service)
         topics = {"live": self.settings.calib_live_topic, "calib": self.settings.calib_calib_topic}
         for stream, topic in topics.items():
+            # field_calib with live.compact publishes camera-size JPEG next to the raw overlay;
+            # that one is passed through untouched, and mutes the (expensive) raw one.
+            self._node.create_subscription(
+                CompressedImage, f"{topic}/compressed", lambda msg, s=stream: self._on_overlay_jpeg(s, msg),
+                qos_profile_sensor_data,
+            )
             self._node.create_subscription(
                 Image, topic, lambda msg, s=stream: self._on_image(s, msg), qos_profile_sensor_data
             )
@@ -258,6 +282,8 @@ class RosCalibBackend(CalibBackend):
         import cv2
         import numpy as np
 
+        if not use_raw(self._compressed_at.get(stream), time.monotonic()):
+            return
         try:
             channels = {"bgr8": 3, "rgb8": 3, "mono8": 1}.get(msg.encoding)
             if channels is None:
@@ -271,6 +297,11 @@ class RosCalibBackend(CalibBackend):
                 self.frames.put(stream, jpeg.tobytes())
         except Exception:  # never kill the executor thread over one bad frame
             log.exception("failed to encode %s frame", stream)
+
+    def _on_overlay_jpeg(self, stream: str, msg) -> None:
+        """Compact overlay from field_calib: already JPEG, so just hand it on."""
+        self._compressed_at[stream] = time.monotonic()
+        self.frames.put(stream, bytes(msg.data), "compressed")
 
     def _on_camera(self, msg) -> None:
         """Camera JPEG (30 Hz): keep camera_stream_fps of them, shrunk to camera_stream_max_width."""
@@ -292,7 +323,7 @@ class RosCalibBackend(CalibBackend):
                 img = cv2.resize(img, (max_w, round(img.shape[0] * max_w / img.shape[1])), interpolation=cv2.INTER_AREA)
             ok, jpeg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, self.settings.stream_jpeg_quality])
             if ok:
-                self.frames.put("camera", jpeg.tobytes())
+                self.frames.put("camera", jpeg.tobytes(), "recompressed")
         except Exception:
             log.exception("failed to re-encode camera frame")
 

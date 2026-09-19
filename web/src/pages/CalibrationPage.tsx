@@ -60,7 +60,7 @@ function StepProgress({ step }: { step: CalibStep }) {
 
 const VIEWS: { key: 'camera' | 'overlay'; label: string }[] = [
   { key: 'camera', label: '相機畫面（即時）' },
-  { key: 'overlay', label: '桌緣疊圖（約每秒 1 張）' },
+  { key: 'overlay', label: '桌緣疊圖' },
 ]
 
 export function CalibrationPage() {
@@ -124,7 +124,7 @@ export function CalibrationPage() {
               ? '相機即時畫面：用來確認整張桌子都在畫面裡。'
               : running
                 ? '校正中：每一輪會縮小搜尋範圍。綠點是採用的桌緣點，其他顏色是捨棄的點（對比不足、落在範圍邊界等）；灰線為本輪前的模型，彩色線為本輪結果。'
-                : '桌緣疊圖：線條為依目前外參投影的桌緣，應與實際桌緣重合。由校正程式計算，約每秒更新一次。'}
+                : '桌緣疊圖：線條為依目前外參投影的桌緣，應與實際桌緣重合。由校正程式計算，更新速度取決於 field_calib 的設定。'}
             {running && ' 切換到其他頁面不會中斷校正。'}
           </p>
           <div className="row between">

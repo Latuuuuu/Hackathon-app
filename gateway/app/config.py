@@ -23,8 +23,7 @@ class Settings(BaseSettings):
     cloud_timeout_s: float = 20.0
     cloud_chat_timeout_s: float = 240.0  # planning takes ~40 s, sometimes much more
     cloud_pipeline_mode: Literal["hybrid", "direct", "compare"] = "hybrid"
-    cloud_allow_vision: bool = False
-    # Mock only: execute sends the demo tree to bt_engine. It moves the real robot, so off by default.
+    # Mock only: a planned mission is sent to bt_engine like Manta's auto-execution. Moves the real robot.
     mock_execute: bool = False
     mock_tree_file: str = ""
 

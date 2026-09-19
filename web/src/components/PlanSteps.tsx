@@ -17,22 +17,12 @@ function describeArgs(args: Record<string, unknown>): string {
     .join('、')
 }
 
-/** Shows the planned mission and asks the user before anything moves. */
-export function ConfirmCard({
-  reply,
-  busy,
-  onExecute,
-  onDismiss,
-}: {
-  reply: ChatReply
-  busy: boolean
-  onExecute: () => void
-  onDismiss: () => void
-}) {
+/** The planned mission, read-only: Manta starts it by itself once the tree is generated. */
+export function PlanSteps({ reply }: { reply: ChatReply }) {
   return (
-    <section className="card confirm">
-      <h2>確認執行</h2>
-      {reply.goal && <p>目標：<b>{reply.goal}</b></p>}
+    <details className="plan-details">
+      <summary>規劃步驟{reply.steps.length ? `（${reply.steps.length} 步）` : ''}</summary>
+      {reply.goal && <p className="plan-goal">目標：{reply.goal}</p>}
       {reply.steps.length > 0 ? (
         <ol className="plan">
           {reply.steps.map((s, i) => (
@@ -44,23 +34,14 @@ export function ConfirmCard({
           ))}
         </ol>
       ) : (
-        <p className="muted">雲端沒有提供步驟摘要，可以展開下方查看行為樹。</p>
+        <p className="muted">雲端沒有提供步驟摘要。</p>
       )}
       {reply.bt_xml && (
         <details>
-          <summary>查看行為樹 XML</summary>
+          <summary>行為樹 XML</summary>
           <pre className="log">{reply.bt_xml}</pre>
         </details>
       )}
-      <p className="muted warn-text">按下執行後機器人會開始移動，請確認周圍安全。</p>
-      <div className="row between">
-        <button onClick={onDismiss} disabled={busy}>
-          先不要，繼續修改
-        </button>
-        <button className="primary" onClick={onExecute} disabled={busy}>
-          {busy ? '送出中…' : '確認執行'}
-        </button>
-      </div>
-    </section>
+    </details>
   )
 }

@@ -98,33 +98,36 @@ def test_gripper_position_and_adjustment():
 
 def test_mock_chat_clarifies_then_plans(client):
     r = client.post("/api/chat", json={"message": "杯子"}).json()
-    assert r["status"] == "NEED_MORE_INFO" and r["questions"] and not r["executable"]
+    assert r["status"] == "NEED_MORE_INFO" and r["questions"] and not r["bt_generated"]
     r2 = client.post("/api/chat", json={"message": "找到杯子並夾起來", "session_id": r["session_id"]}).json()
-    assert r2["executable"] and r2["session_id"] == r["session_id"] and r2["gripper_position"] == 80
+    assert r2["bt_generated"] and r2["session_id"] == r["session_id"] and r2["gripper_position"] == 80
+    # MOCK_EXECUTE defaults to false: generated but not dispatched, like Manta's SKIPPED.
+    assert r2["execution"]["status"] == "SKIPPED" and r2["execution"]["run_id"] is None
 
 
-def test_mock_execute_disabled_by_default(client):
-    mid = client.post("/api/chat", json={"message": "找到杯子並夾起來"}).json()["mission_id"]
-    r = client.post(f"/api/missions/{mid}/execute", json={"prompt": "x"})
-    assert r.status_code == 409 and "MOCK_EXECUTE" in r.json()["error"]
-
-
-def test_mock_execute_records_run_and_feedback(settings):
+def test_mock_auto_execution_records_run_and_feedback(settings):
     settings.mock_execute = True
     with respx.mock:
         respx.post(f"{BT}/execute").mock(
             return_value=httpx.Response(202, json={"ok": True, "run_id": "run-7", "preempted_previous": False})
         )
         with TestClient(create_app(settings)) as c:
-            mid = c.post("/api/chat", json={"message": "找到杯子並夾起來"}).json()["mission_id"]
-            r = c.post(f"/api/missions/{mid}/execute", json={"prompt": "找到杯子並夾起來"}).json()
-            assert r["run_id"] == "run-7"
-            assert c.get("/api/runs/run-7/mission").json()["mission_id"] == mid
+            r = c.post("/api/chat", json={"message": "找到杯子並夾起來"}).json()
+            assert r["execution"] == {"status": "STARTED", "run_id": "run-7", "engine_state": "running",
+                                      "preempted_previous": False, "reason": None, "error": None}
+            mid = r["mission_id"]
+            assert c.get("/api/runs/run-7/mission").json() == {**c.get("/api/runs/run-7/mission").json(),
+                                                                "mission_id": mid, "prompt": "找到杯子並夾起來"}
             assert c.get("/api/runs/run-8/mission").status_code == 404
             fb = c.post(f"/api/missions/{mid}/feedback", json={"rating": 4, "grip_force": "too_strong", "comment": "太緊"}).json()
     assert fb["sent"] == {"rating": 4, "comment": "太緊", "parameters": {"set_gripper_position": 70}}
     rec = json.loads((settings.data_dir / "feedback.jsonl").read_text().splitlines()[-1])
     assert rec["parameters"]["set_gripper_position"] == 70
+
+
+def test_execute_endpoint_is_gone(client):
+    # APP_API.md: the app must not call engine/execute; /api/chat starts missions itself.
+    assert client.post("/api/missions/m1/execute", json={}).status_code in (404, 405)
 
 
 def test_feedback_validation(client):
@@ -134,7 +137,7 @@ def test_feedback_validation(client):
 
 
 def test_bad_ids_rejected(client):
-    assert client.post("/api/missions/..%2F..%2Fadmin/execute", json={}).status_code in (404, 422)
+    assert client.post("/api/missions/..%2F..%2Fadmin/feedback", json={"rating": 3}).status_code in (404, 422)
     assert client.post("/api/missions/a%20b/cancel").status_code == 422
     assert client.post("/api/chat", json={"message": ""}).status_code == 422
 
@@ -151,19 +154,43 @@ def manta_settings(settings):
     return settings
 
 
-def test_manta_chat_is_summarized(manta_settings):
-    chat = json.loads((FIXTURES / "manta_chat.json").read_text())
+def _manta_reply(auto_execution, succeeded=True):
+    chat = json.loads((FIXTURES / "manta_chat.json").read_text())  # real 6.4.0 reply, before auto-execution
+    chat["candidate"]["bt_generation"] = {"succeeded": succeeded, "validated": succeeded, "message": "BehaviorTree XML generated"}
+    chat["candidate"]["auto_execution"] = auto_execution
+    return chat
+
+
+def test_manta_chat_started(manta_settings):
+    mid = "9cff22c9-7dd7-4abf-b7c8-91844294de8a"
+    chat = _manta_reply({"enabled": True, "attempted": True, "started": True, "status": "STARTED", "mission_id": mid,
+                         "run_id": "run-11", "engine_state": "running", "preempted_previous": True,
+                         "poll_interval_s": 0.3, "reason": None, "error": None})
     with respx.mock:
         route = respx.post(f"{MANTA}/api/chat").mock(return_value=httpx.Response(200, json=chat))
         with TestClient(create_app(manta_settings)) as c:
             r = c.post("/api/chat", json={"message": "找到杯子並夾起來", "session_id": "s-1"}).json()
+            rec = c.get("/api/runs/run-11/mission").json()
     sent = json.loads(route.calls.last.request.content)
-    assert sent["message"] == "找到杯子並夾起來" and sent["session_id"] == "s-1"
-    assert sent["pipeline_mode"] == "hybrid" and sent["options"] == {"allow_vision": False}
-    assert r["executable"] and r["mission_id"] == chat["candidate"]["mission_id"]
-    assert r["session_id"] == chat["session_id"] and r["gripper_position"] == 80
+    # No options: auto_execute keeps its default (true); unknown fields would be a 422.
+    assert sent == {"message": "找到杯子並夾起來", "session_id": "s-1", "pipeline_mode": "hybrid", "world_state": {}}
+    assert r["bt_generated"] and r["mission_id"] == mid and r["session_id"] == chat["session_id"]
+    assert r["execution"]["status"] == "STARTED" and r["execution"]["run_id"] == "run-11"
+    assert r["execution"]["preempted_previous"] is True
+    assert r["gripper_position"] == 80
     assert [s["action"] for s in r["steps"]] == ["VisualizeObject", "NavigateToDetectedObject", "SetGripper"]
     assert "rag_context" not in r  # the huge candidate is not forwarded
+    assert rec["mission_id"] == mid and rec["prompt"] == "找到杯子並夾起來"
+
+
+def test_manta_chat_generated_but_dispatch_failed(manta_settings):
+    chat = _manta_reply({"status": "FAILED", "run_id": None, "error": {"message": "engine unreachable"}, "reason": None})
+    with respx.mock:
+        respx.post(f"{MANTA}/api/chat").mock(return_value=httpx.Response(200, json=chat))
+        with TestClient(create_app(manta_settings)) as c:
+            r = c.post("/api/chat", json={"message": "找到杯子並夾起來"}).json()
+    assert r["bt_generated"] and r["execution"]["status"] == "FAILED" and r["execution"]["run_id"] is None
+    assert r["execution"]["error"] == "engine unreachable"
 
 
 def test_manta_need_more_info(manta_settings):
@@ -172,41 +199,29 @@ def test_manta_need_more_info(manta_settings):
         "status": "NEED_MORE_INFO", "message": "要拿哪一個？",
         "questions": [{"field": "object_name", "question": "哪個杯子？"}, "放哪裡？", {"field": "x"}],
         "missing_capabilities": [{"name": "open_door"}],
+        "bt_generation": {"succeeded": False, "message": "no tree"},
+        "auto_execution": {"status": "SKIPPED", "reason": "NEED_MORE_INFO"},
     }}
     with respx.mock:
         respx.post(f"{MANTA}/api/chat").mock(return_value=httpx.Response(200, json=reply))
         with TestClient(create_app(manta_settings)) as c:
             r = c.post("/api/chat", json={"message": "拿杯子"}).json()
-    assert r["status"] == "NEED_MORE_INFO" and not r["executable"]
+    assert r["status"] == "NEED_MORE_INFO" and not r["bt_generated"] and r["execution"]["status"] == "SKIPPED"
     assert r["questions"] == ["哪個杯子？", "放哪裡？", '{"field": "x"}']
     assert r["missing_capabilities"] == ["open_door"]
 
 
-@pytest.mark.parametrize("execute_reply,status_reply", [
-    ({"ok": True, "run_id": "run-3"}, None),                                   # run_id in the reply
-    ({"ok": True, "execution": {"engine": {"run_id": "run-3"}}}, None),        # nested
-    ({"ok": True}, {"execution": {"run_id": "run-3", "state": "running"}}),     # only in status
-])
-def test_manta_execute_finds_run_id(manta_settings, execute_reply, status_reply):
-    with respx.mock:
-        respx.post(f"{MANTA}/api/missions/m-1/engine/execute").mock(return_value=httpx.Response(200, json=execute_reply))
-        respx.get(f"{MANTA}/api/missions/m-1/engine/status").mock(return_value=httpx.Response(200, json=status_reply or {}))
-        with TestClient(create_app(manta_settings)) as c:
-            r = c.post("/api/missions/m-1/execute", json={"prompt": "拿杯子"}).json()
-            rec = c.get("/api/runs/run-3/mission").json()
-    assert r["run_id"] == "run-3" and rec["mission_id"] == "m-1" and rec["prompt"] == "拿杯子"
-
-
 def test_manta_errors_pass_through(manta_settings):
     with respx.mock:
-        respx.post(f"{MANTA}/api/missions/nope/engine/execute").mock(
+        respx.get(f"{MANTA}/api/missions/nope").mock(return_value=httpx.Response(404, json={"detail": "Mission not found"}))
+        respx.post(f"{MANTA}/api/missions/nope/feedback").mock(
             return_value=httpx.Response(404, json={"detail": "Mission not found"}))
         respx.post(f"{MANTA}/api/missions/m-1/feedback").mock(
             return_value=httpx.Response(409, json={"detail": "execution not terminal"}))
         respx.get(f"{MANTA}/api/missions/m-1").mock(return_value=httpx.Response(200, json={"bt_xml": None}))
         respx.post(f"{MANTA}/api/chat").mock(side_effect=httpx.ConnectError("down"))
         with TestClient(create_app(manta_settings)) as c:
-            r404 = c.post("/api/missions/nope/execute", json={})
+            r404 = c.post("/api/missions/nope/feedback", json={"rating": 2})
             r409 = c.post("/api/missions/m-1/feedback", json={"rating": 3})
             r502 = c.post("/api/chat", json={"message": "hi"})
     assert r404.status_code == 404 and "Mission not found" in r404.json()["error"]
@@ -324,6 +339,23 @@ def test_mock_run_reports_new_run_only(settings):
         r = c.post("/api/calib/run").json()
     assert r["success"] is True and r["run"] == "20260920_000000"
     assert r["result"]["cam_tf"]["z"] == 1.29113
+
+
+def test_compressed_overlays_mute_the_raw_topic():
+    from app.calib import COMPRESSED_GRACE_S, use_raw
+
+    assert use_raw(None, 100.0) is True  # field_calib without live.compact
+    assert use_raw(100.0, 100.5) is False  # compact overlay just arrived
+    assert use_raw(100.0, 100.0 + COMPRESSED_GRACE_S + 0.1) is True  # compact turned off again
+
+
+def test_state_reports_frame_source(settings):
+    app = create_app(settings)
+    with TestClient(app) as c:
+        app.state.calib.frames.put("live", b"jpeg", "compressed")
+        app.state.calib.frames.put("camera", b"jpeg", "recompressed")
+        state = c.get("/api/calib/state").json()
+    assert state["sources"] == {"live": "compressed", "calib": None, "camera": "recompressed"}
 
 
 def test_stream_without_frames_is_503(client):

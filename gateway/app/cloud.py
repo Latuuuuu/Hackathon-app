@@ -1,7 +1,8 @@
 """Client for the cloud task server (Manta, see APP_API.md).
 
-Flow: chat (possibly several turns) -> mission_id + bt_xml -> user confirms -> execute on
-Manta -> bt_engine run_id -> status is followed on bt_engine directly -> feedback per mission.
+Flow: chat (possibly several turns). Once Manta generates a valid tree it starts it on bt_engine
+by itself (auto_execution) and returns the run_id; status is then followed on bt_engine directly,
+and feedback is sent per mission. The app never calls engine/execute (APP_API.md: diagnostics only).
 """
 import asyncio
 import json
@@ -73,23 +74,6 @@ def adjusted_grip(base: int | None, grip_force: str | None) -> int | None:
     return max(0, min(100, base + delta))
 
 
-def find_key(obj: Any, key: str) -> Any:
-    """First non-empty value of `key` anywhere in a nested JSON structure."""
-    if isinstance(obj, dict):
-        if obj.get(key):
-            return obj[key]
-        children = obj.values()
-    elif isinstance(obj, list):
-        children = obj
-    else:
-        return None
-    for child in children:
-        found = find_key(child, key)
-        if found:
-            return found
-    return None
-
-
 def as_text(item: Any) -> str:
     """Manta sends some lists as strings and some as objects, e.g. {"field", "question"}."""
     if isinstance(item, str):
@@ -101,11 +85,27 @@ def as_text(item: Any) -> str:
     return json.dumps(item, ensure_ascii=False)
 
 
+def summarize_execution(candidate: dict[str, Any], bt_generated: bool) -> dict[str, Any]:
+    """candidate.auto_execution: STARTED (run_id set) / FAILED / SKIPPED."""
+    ae = candidate.get("auto_execution") or {}
+    status = ae.get("status") or ("SKIPPED" if bt_generated else None)
+    return {
+        "status": status,
+        "run_id": ae.get("run_id") if status == "STARTED" else None,
+        "engine_state": ae.get("engine_state"),
+        "preempted_previous": bool(ae.get("preempted_previous")),
+        "reason": as_text(ae["reason"]) if ae.get("reason") else None,
+        "error": as_text(ae["error"]) if ae.get("error") else None,
+    }
+
+
 def summarize_candidate(session_id: str | None, candidate: dict[str, Any]) -> dict[str, Any]:
     """The browser only needs a small part of Manta's (very large) candidate."""
     plan = candidate.get("compact_semantic_plan") or {}
     bt_xml = candidate.get("bt_xml")
-    mission_id = candidate.get("mission_id")
+    gen = candidate.get("bt_generation") or {}
+    bt_generated = bool(gen["succeeded"]) if "succeeded" in gen else bool(bt_xml and candidate.get("status") == "SUCCESS")
+    mission_id = candidate.get("mission_id") or (candidate.get("auto_execution") or {}).get("mission_id")
     return {
         "session_id": session_id,
         "status": candidate.get("status"),
@@ -113,7 +113,9 @@ def summarize_candidate(session_id: str | None, candidate: dict[str, Any]) -> di
         "questions": [as_text(q) for q in candidate.get("questions") or []],
         "missing_capabilities": [as_text(c) for c in candidate.get("missing_capabilities") or []],
         "mission_id": mission_id,
-        "executable": bool(mission_id and bt_xml and candidate.get("status") == "SUCCESS"),
+        "bt_generated": bt_generated,
+        "generation_message": as_text(gen.get("message") or ""),
+        "execution": summarize_execution(candidate, bt_generated),
         "goal": as_text(plan.get("goal_description") or ""),
         "steps": [
             {
@@ -170,7 +172,8 @@ class CloudTaskClient(ABC):
     async def health(self) -> dict[str, Any]: ...
 
     @abstractmethod
-    async def chat(self, req: ChatRequest) -> dict[str, Any]: ...
+    async def _chat(self, req: ChatRequest) -> tuple[str | None, dict[str, Any]]:
+        """Return (session_id, candidate) in Manta's shape."""
 
     @abstractmethod
     async def reset(self, req: ResetRequest) -> dict[str, Any]: ...
@@ -179,20 +182,21 @@ class CloudTaskClient(ABC):
     async def mission_xml(self, mission_id: str) -> str | None: ...
 
     @abstractmethod
-    async def _execute(self, mission_id: str) -> str | None:
-        """Start the mission on bt_engine and return its run_id (None if unknown)."""
-
-    @abstractmethod
     async def cancel(self, mission_id: str) -> dict[str, Any]: ...
 
     @abstractmethod
     async def _feedback(self, mission_id: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 
-    async def execute(self, mission_id: str, prompt: str = "") -> dict[str, Any]:
-        run_id = await self._execute(mission_id)
-        if run_id:
-            self.runs.put(run_id, {"mission_id": mission_id, "prompt": prompt, "t": time.time()})
-        return {"ok": True, "mission_id": mission_id, "run_id": run_id}
+    async def chat(self, req: ChatRequest) -> dict[str, Any]:
+        session_id, candidate = await self._chat(req)
+        reply = summarize_candidate(session_id, candidate)
+        ex = reply["execution"]
+        if reply["bt_generated"]:
+            self._log("executions.jsonl", {"session_id": session_id, "mission_id": reply["mission_id"],
+                                           "prompt": req.message, "auto_execution": candidate.get("auto_execution")})
+        if ex["status"] == "STARTED" and ex["run_id"] and reply["mission_id"]:
+            self.runs.put(ex["run_id"], {"mission_id": reply["mission_id"], "prompt": req.message, "t": time.time()})
+        return reply
 
     async def feedback(self, mission_id: str, fb: FeedbackRequest) -> dict[str, Any]:
         base = gripper_position(await self.mission_xml(mission_id))
@@ -232,23 +236,27 @@ class MockCloudClient(CloudTaskClient):
     async def health(self) -> dict[str, Any]:
         return {"ok": True, "mode": "mock"}
 
-    async def chat(self, req: ChatRequest) -> dict[str, Any]:
+    async def _chat(self, req: ChatRequest) -> tuple[str | None, dict[str, Any]]:
         session_id = req.session_id or uuid.uuid4().hex
         self._log("chat.jsonl", {"session_id": session_id, "message": req.message})
         await asyncio.sleep(1.0)
         if len(req.message.strip()) < 4:
-            return summarize_candidate(session_id, {
+            return session_id, {
                 "status": "NEED_MORE_INFO",
                 "message": "（mock）請再說清楚一點：要找什麼物品？找到之後要做什麼？",
                 "questions": ["要找的物品是什麼？", "找到後要夾起來嗎？"],
-            })
+                "bt_generation": {"succeeded": False, "message": "no tree for NEED_MORE_INFO"},
+                "auto_execution": {"status": "SKIPPED", "reason": "no tree"},
+            }
         mission_id = uuid.uuid4().hex
         self._missions[mission_id] = self._tree
-        return summarize_candidate(session_id, {
+        return session_id, {
             "status": "SUCCESS",
             "message": "（mock）已產生行為樹。",
             "mission_id": mission_id,
             "bt_xml": self._tree,
+            "bt_generation": {"succeeded": True, "validated": True, "message": "（mock）行為樹已產生並通過驗證。"},
+            "auto_execution": await self._auto_execute(mission_id),
             "compact_semantic_plan": {
                 "goal_description": req.message,
                 "steps": [
@@ -257,7 +265,7 @@ class MockCloudClient(CloudTaskClient):
                     {"action": "SetGripper", "arguments": {"position": 80}, "objective": "夾住杯子"},
                 ],
             },
-        })
+        }
 
     async def reset(self, req: ResetRequest) -> dict[str, Any]:
         return {"session_id": uuid.uuid4().hex, "previous_session_id": req.session_id}
@@ -265,18 +273,18 @@ class MockCloudClient(CloudTaskClient):
     async def mission_xml(self, mission_id: str) -> str | None:
         return self._missions.get(mission_id)
 
-    async def _execute(self, mission_id: str) -> str | None:
-        if mission_id not in self._missions:
-            raise CloudError("Mission not found", 404)
+    async def _auto_execute(self, mission_id: str) -> dict[str, Any]:
+        """What Manta does after generating a tree, in its auto_execution shape."""
         if not self._execute_enabled:
-            raise CloudError("mock mode: MOCK_EXECUTE=false, nothing was sent to bt_engine", 409)
+            return {"status": "SKIPPED", "mission_id": mission_id, "reason": "mock mode: MOCK_EXECUTE=false"}
         try:
             code, body = await self._bt.execute(self._missions[mission_id])
         except BtEngineError as e:
-            raise CloudError(str(e)) from e
+            return {"status": "FAILED", "mission_id": mission_id, "error": str(e)}
         if code >= 300:
-            raise CloudError(f"bt_engine /execute {code}: {body.get('error')}")
-        return body.get("run_id")
+            return {"status": "FAILED", "mission_id": mission_id, "error": f"bt_engine /execute {code}: {body.get('error')}"}
+        return {"status": "STARTED", "mission_id": mission_id, "run_id": body.get("run_id"),
+                "engine_state": "running", "preempted_previous": body.get("preempted_previous", False)}
 
     async def cancel(self, mission_id: str) -> dict[str, Any]:
         code, body = await self._bt.cancel()
@@ -301,7 +309,6 @@ class MantaCloudClient(CloudTaskClient):
         )
         self._chat_timeout = settings.cloud_chat_timeout_s
         self._pipeline = settings.cloud_pipeline_mode
-        self._allow_vision = settings.cloud_allow_vision
 
     async def _call(self, method: str, path: str, **kwargs: Any) -> Any:
         try:
@@ -326,20 +333,15 @@ class MantaCloudClient(CloudTaskClient):
         body = await self._call("GET", "/health")
         return {"ok": bool(body.get("ok")), "mode": "http", "version": body.get("version")}
 
-    async def chat(self, req: ChatRequest) -> dict[str, Any]:
+    async def _chat(self, req: ChatRequest) -> tuple[str | None, dict[str, Any]]:
+        # options is omitted on purpose: auto_execute defaults to true (APP_API.md), allow_vision is inert.
         body = await self._call(
             "POST",
             "/api/chat",
-            json={
-                "message": req.message,
-                "session_id": req.session_id,
-                "pipeline_mode": self._pipeline,
-                "world_state": {},
-                "options": {"allow_vision": self._allow_vision},
-            },
+            json={"message": req.message, "session_id": req.session_id, "pipeline_mode": self._pipeline, "world_state": {}},
             timeout=self._chat_timeout,
         )
-        return summarize_candidate(body.get("session_id"), body.get("candidate") or {})
+        return body.get("session_id"), body.get("candidate") or {}
 
     async def reset(self, req: ResetRequest) -> dict[str, Any]:
         return await self._call("POST", "/api/sessions/reset", json={"previous_session_id": req.session_id})
@@ -350,21 +352,6 @@ class MantaCloudClient(CloudTaskClient):
         except CloudError:
             return None
         return body.get("bt_xml")
-
-    async def _execute(self, mission_id: str) -> str | None:
-        body = await self._call("POST", f"/api/missions/{mission_id}/engine/execute")
-        self._log("manta_execute.jsonl", {"mission_id": mission_id, "response": body})
-        run_id = find_key(body, "run_id")
-        # Not in the reply: Manta's status knows it once the engine accepted the tree.
-        for _ in range(10):
-            if run_id:
-                break
-            await asyncio.sleep(0.5)
-            status = await self._call("GET", f"/api/missions/{mission_id}/engine/status", params={"refresh": "true"})
-            run_id = find_key(status.get("execution"), "run_id")
-        if not run_id:
-            log.warning("no run_id for mission %s; execute reply: %s", mission_id, str(body)[:500])
-        return run_id
 
     async def cancel(self, mission_id: str) -> dict[str, Any]:
         body = await self._call("POST", f"/api/missions/{mission_id}/engine/cancel")

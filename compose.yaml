@@ -13,9 +13,10 @@ services:
     user: "${USER_UID:-1000}:${USER_GID:-1000}"
     env_file: .env
     environment:
-      # Same DDS domain as the localization container; own Cyclone config with a larger
-      # receive buffer for the ~4.3 MB overlay images (see docker/cyclonedds.xml).
-      - ROS_DOMAIN_ID=0
+      # Must match the localization container's ROS_DOMAIN_ID (its compose sets 59).
+      # Own Cyclone config with a larger receive buffer for the raw overlay images
+      # (~4.3 MB each; with field_calib live.compact the compressed topic is used instead).
+      - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-59}
       - RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
       - CYCLONEDDS_URI=file:///app/cyclonedds.xml
       - CALIB_MODE=ros

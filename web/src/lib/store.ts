@@ -37,7 +37,6 @@ export interface ChatMessage {
   role: 'user' | 'agent'
   text: string
   reply?: ChatReply
-  executedRunId?: string | null
 }
 
 export interface ChatState {

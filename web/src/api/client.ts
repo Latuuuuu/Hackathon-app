@@ -5,7 +5,6 @@ import type {
   CalibState,
   ChatReply,
   CloudHealth,
-  ExecuteResponse,
   FeedbackResponse,
   FieldConfig,
   MissionFeedback,
@@ -63,8 +62,6 @@ export const api = {
     call<ChatReply>('POST', '/api/chat', { message, session_id: sessionId }),
   resetSession: (sessionId: string | null) =>
     call<{ session_id: string }>('POST', '/api/sessions/reset', { session_id: sessionId }),
-  execute: (missionId: string, prompt: string) =>
-    call<ExecuteResponse>('POST', `/api/missions/${encodeURIComponent(missionId)}/execute`, { prompt }),
   cancelMission: (missionId: string) =>
     call<{ ok: boolean; was_running?: boolean }>('POST', `/api/missions/${encodeURIComponent(missionId)}/cancel`),
   missionFeedback: (missionId: string, fb: MissionFeedback) =>

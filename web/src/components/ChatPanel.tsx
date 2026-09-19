@@ -1,10 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ChatReply } from '../api/types'
 import type { ChatMessage } from '../lib/store'
+import { PlanSteps } from './PlanSteps'
 
 const STATUS_LABEL: Record<string, string> = {
   SUCCESS: '已產生行為樹',
   NEED_MORE_INFO: '需要補充資訊',
+  PLANNING_FAILURE: '規劃失敗',
+  UNSUPPORTED: '機器人做不到',
+  UNSAFE: '判定為不安全',
+  INVALID_REQUEST: '指令無效',
 }
 
 /** Replies saved by older versions may still hold objects such as {field, question}. */
@@ -27,11 +32,26 @@ function Elapsed({ since }: { since: number }) {
 }
 
 function AgentBubble({ reply }: { reply: ChatReply }) {
-  if (reply.executable) {
+  // Replies saved before auto-execution had `executable` instead of bt_generated/execution.
+  const legacy = reply as ChatReply & { executable?: boolean }
+  const generated = reply.bt_generated ?? !!legacy.executable
+  const ex = reply.execution
+  if (generated) {
     return (
       <>
-        <div>已規劃好任務，請在下方確認後執行。</div>
-        {reply.goal && <small className="muted">目標：{text(reply.goal)}</small>}
+        {ex?.status === 'STARTED' ? (
+          <div className="ok-text">
+            已產生行為樹，機器人開始執行{ex.run_id ? `（${ex.run_id}）` : ''}。
+            {ex.preempted_previous && <small className="warn-text"> 已中斷先前的任務。</small>}
+          </div>
+        ) : ex?.status === 'FAILED' ? (
+          <div className="error">已產生行為樹，但送到機器人失敗：{text(ex.error ?? ex.reason ?? '沒有說明')}</div>
+        ) : ex?.status === 'SKIPPED' ? (
+          <div>已產生行為樹，但這次沒有執行：{text(ex.reason ?? '沒有說明')}</div>
+        ) : (
+          <div>已產生行為樹。</div>
+        )}
+        {reply.steps && <PlanSteps reply={reply} />}
       </>
     )
   }
@@ -99,7 +119,7 @@ export function ChatPanel({
         ))}
         {busy && (
           <div className="bubble agent thinking">
-            <span className="spinner" /> 規劃中，通常要 30–60 秒…（<Elapsed since={thinkingSince} />）
+            <span className="spinner" /> 規劃中，通常要 30–60 秒，成功後會直接開始執行…（<Elapsed since={thinkingSince} />）
           </div>
         )}
       </div>
@@ -119,6 +139,7 @@ export function ChatPanel({
           送出
         </button>
       </form>
+      <p className="muted hint">規劃成功後，機器人會<b>直接開始執行</b>；隨時可以在下方按「中斷任務」。</p>
     </section>
   )
 }

@@ -43,25 +43,31 @@ export interface PlanStep {
   objective: string
 }
 
-/** Manta /api/chat, trimmed by the gateway. */
+/** Manta's auto_execution after a tree was generated. */
+export interface ChatExecution {
+  status: 'STARTED' | 'FAILED' | 'SKIPPED' | null
+  run_id: string | null
+  engine_state: string | null
+  preempted_previous: boolean
+  reason: string | null
+  error: string | null
+}
+
+/** Manta /api/chat, trimmed by the gateway. A generated tree is started by Manta itself. */
 export interface ChatReply {
   session_id: string | null
-  status: string | null // SUCCESS | NEED_MORE_INFO | ...
+  status: string | null // SUCCESS | NEED_MORE_INFO | PLANNING_FAILURE | UNSUPPORTED | UNSAFE | ...
   message: string
   questions: string[]
   missing_capabilities: string[]
   mission_id: string | null
-  executable: boolean
+  bt_generated: boolean
+  generation_message: string
+  execution: ChatExecution
   goal: string
   steps: PlanStep[]
   gripper_position: number | null
   bt_xml: string | null
-}
-
-export interface ExecuteResponse {
-  ok: boolean
-  mission_id: string
-  run_id: string | null
 }
 
 export interface RunMission {
@@ -133,4 +139,5 @@ export interface CalibState {
   latest_run: string | null
   streams: Record<'live' | 'calib' | 'camera', number | null>
   frame_counts?: Record<'live' | 'calib' | 'camera', number>
+  sources?: Record<'live' | 'calib' | 'camera', string | null>
 }

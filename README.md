@@ -18,13 +18,13 @@ App Gateway (FastAPI + rclpy)
 
 | 頁面 | 內容 |
 |---|---|
-| 任務 `/` | 和 Manta 對話規劃任務（資訊不足時會追問）→ 規劃好後顯示步驟與夾爪值，按「確認執行」才會讓機器人動；即時顯示 BT 狀態、目前動作、執行紀錄；中斷任務；最近任務列表 |
+| 任務 `/` | 和 Manta 對話規劃任務（資訊不足時會追問）。**規劃成功後 Manta 會直接開始執行**（APP_API.md 的 auto_execution），App 用回傳的 `run_id` 追蹤；對話中可展開規劃步驟與行為樹。有任務在跑時再送訊息會先詢問（新任務會中斷舊的）。即時顯示 BT 狀態、目前動作、執行紀錄；中斷任務；最近任務列表 |
 | 校正 `/calibration` | ① 輸入桌子長、寬、張數（可忽略被擋住的桌緣）→ ② 即時畫面確認桌子入鏡，按開始校正後顯示逐輪桌緣偵測疊圖 → ③ 結果：通過/未通過、採用率、重投影誤差、相機外參、各桌緣品質、最終疊圖 |
 | 回饋 `/feedback/:runId` | 任務結束後自動進入。失敗時列出原因（`notes`、`last_leaf_failure`、`error`），可修改指令在原對話重新規劃（附上失敗原因）；滿意度（必填）、夾取力道（太小／剛好／太大 → 以這次行為樹的夾爪值 +10／不變／−10 送給 Manta）、文字意見 |
 
 ## 部署（定位 server 那台）
 
-Gateway 要和 `field_calib_node` 在同一個 ROS domain（`ROS_DOMAIN_ID=0`），並且和它共用定位 repo 的資料夾，所以要跑在定位 server 那台主機上。
+Gateway 要和 `field_calib_node` 在同一個 ROS domain（見下方 `ROS_DOMAIN_ID`），並且和它共用定位 repo 的資料夾，所以要跑在定位 server 那台主機上。
 
 ```bash
 cp .env.example .env        # 填 BT_ENGINE_TOKEN（向 kesler 要）
@@ -44,6 +44,15 @@ Gateway 第一次啟動時，如果這個檔案還不存在，會從 `src/field_
 
 定位 repo 不在 `../Hackathon-vision-server-localization` 時，在 `.env` 設 `VISION_WS=<路徑>`（相對於 repo 根目錄，或用絕對路徑）。**改了程式碼一定要加 `--build`**，否則會沿用舊 image。
 這個路徑或 `data/` 不存在時，`docker compose up` 會直接報錯 `bind source path does not exist`。這是刻意的：只有跟 field_calib 在同一台主機上，校正才會生效。
+
+Gateway 會**優先訂閱 field_calib 的壓縮疊圖**（`~/live/overlay/compressed`、`~/calib/overlay/compressed`，需要 field_calib 以 `live.compact:=true` 啟動），JPEG 直接轉送不重新編碼；超過 3 秒沒有壓縮影像時，自動退回原本的未壓縮 topic。`GET /api/calib/state` 的 `sources` 會顯示目前用的是哪一種。建議 field_calib 這樣啟動：
+
+```bash
+ros2 launch field_calib field_calib.launch.py \
+  field_file:=/home/vision/vision_ws/tools/calib/field_app.yaml live.compact:=true live.period:=0.1
+```
+
+**`ROS_DOMAIN_ID` 必須和定位 server 的容器一致**（定位 repo 的 compose 目前是 59），在 `.env` 設定。
 
 Gateway 使用自己的 CycloneDDS 設定 [docker/cyclonedds.xml](docker/cyclonedds.xml)：field_calib 的疊圖一張約 4.3 MB，預設 2 MB 的接收緩衝區會讓每張都掉片段而整張作廢，所以把緩衝區請求調大（實際上限是主機的 `net.core.rmem_max`，目前 4 MB → 生效 8 MB）。`GET /api/calib/state` 的 `frame_counts` 可以看 Gateway 實際收到幾張。
 
@@ -75,8 +84,8 @@ cd web && npm install && npm run dev
 | `BT_ENGINE_URL` / `BT_ENGINE_TOKEN` | bt_engine 位址與 token。區網 `http://192.168.50.125:8090`，公開 `https://mcpc.taile84e23.ts.net` |
 | `CLOUD_MODE` | `http`：接 Manta。`mock`：離線替身，對話與回饋寫進 `data/*.jsonl` |
 | `CLOUD_URL` / `CLOUD_TOKEN` | Manta 位址（目前 `http://210.61.209.139:45343`）；token 目前不需要 |
-| `CLOUD_PIPELINE_MODE` / `CLOUD_ALLOW_VISION` / `CLOUD_CHAT_TIMEOUT_S` | 送給 `/api/chat` 的 `pipeline_mode`（預設 hybrid）、`options.allow_vision`、規劃逾時秒數（預設 240） |
-| `MOCK_EXECUTE` | mock 模式下按「確認執行」是否把 demo 行為樹送到 bt_engine。**會讓真的機器人動**，預設關閉 |
+| `CLOUD_PIPELINE_MODE` / `CLOUD_CHAT_TIMEOUT_S` | 送給 `/api/chat` 的 `pipeline_mode`（預設 hybrid）、規劃逾時秒數（預設 240）。`options` 不送，`auto_execute` 維持 Manta 預設的 true |
+| `MOCK_EXECUTE` | mock 模式下規劃成功時，是否像 Manta 一樣把 demo 行為樹送到 bt_engine。**會讓真的機器人動**，預設關閉（回 `SKIPPED`） |
 | `CALIB_MODE` | `auto`（有 rclpy 就用 ros）／`ros`／`mock` |
 | `FIELD_FILE` / `CALIB_OUTPUT_DIR` | 桌子設定檔、校正輸出資料夾（docker compose 已設好） |
 | `CALIB_CAMERA_TOPIC` / `CAMERA_STREAM_FPS` / `CAMERA_STREAM_MAX_WIDTH` | 校正頁「相機畫面」的來源（預設 `/camera/camera/color/image_raw/compressed`）、輸出幀率（預設 15）、縮圖寬度（預設 960 px） |
@@ -85,9 +94,8 @@ cd web && npm install && npm run dev
 
 | Method | Path | 說明 |
 |---|---|---|
-| POST | `/api/chat` | `{message, session_id?}` → Manta `/api/chat`，回傳精簡後的 `{session_id, status, message, questions, mission_id, executable, goal, steps, gripper_position, bt_xml}` |
+| POST | `/api/chat` | `{message, session_id?}` → Manta `/api/chat`（會自動執行），回傳精簡後的 `{session_id, status, message, questions, mission_id, bt_generated, generation_message, execution: {status: STARTED\|FAILED\|SKIPPED, run_id, preempted_previous, reason, error}, goal, steps, gripper_position, bt_xml}`；`STARTED` 時記下 run → mission 對應 |
 | POST | `/api/sessions/reset` | 開新對話 |
-| POST | `/api/missions/{id}/execute` | `{prompt}` → Manta execute，回傳 `{run_id}` 並記下 run → mission 對應 |
 | POST | `/api/missions/{id}/cancel` | Manta cancel；Manta 連不上時改直接叫 bt_engine `/cancel` |
 | POST | `/api/missions/{id}/feedback` | `{rating 1-5（必填）, comment, grip_force: too_weak\|ok\|too_strong}` → Manta，夾爪值由 Gateway 換算 |
 | GET | `/api/runs/{run_id}/mission` | 這個 run 對應的 mission（只有從 App 執行的才有） |
@@ -98,7 +106,7 @@ cd web && npm install && npm run dev
 | GET/PUT | `/api/calib/field` | 桌子設定 `{length, depth, count, disabled_segments}`（公尺） |
 | POST | `/api/calib/run` | 觸發校正（阻塞到結束），回傳 `{success, message, run, result}` |
 | GET | `/api/calib/result` | 目前生效的 `cam_tf.yaml` |
-| GET | `/api/calib/state` | 模式、是否連到 field_calib_node、影像最後更新時間 |
+| GET | `/api/calib/state` | 模式、是否連到 field_calib_node、影像最後更新時間、`frame_counts`、`sources`（compressed／raw／recompressed） |
 | GET | `/api/calib/stream/{live\|calib\|camera}` | MJPEG 串流（camera 為相機原始畫面，約 15 fps；live／calib 為 field_calib 疊圖，約 1 fps） |
 | GET | `/api/calib/snapshot/{live\|calib}` | 單張 JPEG |
 | GET | `/api/calib/image/{final_overlay\|final_strips\|final_residuals}?run=` | 校正輸出的 PNG |
@@ -112,7 +120,8 @@ cd web && npm run build               # 型別檢查 + 打包
 
 ## 待辦與限制
 
-- **Manta execute 的回傳格式還沒實測**（會讓機器人動）。Gateway 會在 execute 回應和 `engine/status` 裡找 bt_engine 的 `run_id`；找不到時退回「執行後第一個新出現的 run」，同時有別人送樹可能抓錯。第一次實際執行的回應會記在 `data/manta_execute.jsonl`。
+- **`/api/chat` 不是可重送的請求**：規劃成功就會讓機器人動。逾時或斷線時 App 不會自動重送，並提示先看任務狀態。每次產生行為樹的 `auto_execution` 原始內容記在 `data/executions.jsonl`。
+- App 不使用 `/ws/{session_id}`，狀態直接輪詢 bt_engine 的 `/status/{run_id}`。
 - **對話紀錄存在各瀏覽器**（localStorage），換裝置會看不到先前對話；Manta 端的 session 仍在。
 - **沒有真正的桌面遮罩。** 校正畫面用 `field_calib_node` 的 overlay 影像（投影桌緣 + 偵測邊點）代替。要真的 mask，需要在定位 repo 新增 topic。
 - **`/cancel` 會停掉 bt_engine 上任何正在跑的樹**，包括別的 client 送的。

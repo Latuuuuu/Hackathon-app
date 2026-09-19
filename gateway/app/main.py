@@ -11,8 +11,6 @@ from fastapi.staticfiles import StaticFiles
 
 from . import calib
 from .bt import BtClient, BtEngineError
-from pydantic import BaseModel, Field
-
 from .cloud import ChatRequest, CloudError, FeedbackRequest, ResetRequest, make_cloud_client
 from .config import Settings, get_settings
 
@@ -56,9 +54,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     MissionId = Annotated[str, PathParam(pattern=r"^[A-Za-z0-9_-]{1,100}$")]
     RunId = Annotated[str, PathParam(pattern=r"^[A-Za-z0-9_.-]{1,100}$")]
 
-    class ExecuteRequest(BaseModel):
-        prompt: str = Field(default="", max_length=4000)
-
     @app.get("/api/cloud/health")
     async def cloud_health(request: Request):
         return await request.app.state.cloud.health()
@@ -70,10 +65,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/sessions/reset")
     async def reset_session(req: ResetRequest, request: Request):
         return await request.app.state.cloud.reset(req)
-
-    @app.post("/api/missions/{mission_id}/execute")
-    async def execute_mission(mission_id: MissionId, req: ExecuteRequest, request: Request):
-        return await request.app.state.cloud.execute(mission_id, req.prompt)
 
     @app.post("/api/missions/{mission_id}/cancel")
     async def cancel_mission(mission_id: MissionId, request: Request):
@@ -149,6 +140,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "latest_run": run.name if run else None,
             "streams": {s: (f[1] if (f := backend.frames.get(s)) else None) for s in calib.STREAMS},
             "frame_counts": {s: (f[0] if (f := backend.frames.get(s)) else 0) for s in calib.STREAMS},
+            "sources": {s: backend.frames.source(s) for s in calib.STREAMS},
         }
 
     @app.post("/api/calib/run")
