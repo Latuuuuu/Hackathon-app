@@ -29,7 +29,7 @@ Gateway 要和 `field_calib_node` 在同一個 ROS domain（`ROS_DOMAIN_ID=0`）
 ```bash
 cp .env.example .env        # 填 BT_ENGINE_TOKEN（向 kesler 要）
 mkdir -p data
-docker compose -f docker/compose.yaml up -d --build
+docker compose up -d --build        # 在 repo 根目錄執行
 # 開 http://<主機IP>:8000/
 ```
 
@@ -42,7 +42,7 @@ ros2 launch field_calib field_calib.launch.py \
 
 Gateway 第一次啟動時，如果這個檔案還不存在，會從 `src/field_calib/config/field.yaml` 複製一份。
 
-定位 repo 不在 `../Hackathon-vision-server-lacalization` 時，在 `.env` 設 `VISION_WS=<路徑>`。
+定位 repo 不在 `../Hackathon-vision-server-localization` 時，在 `.env` 設 `VISION_WS=<路徑>`（相對於 repo 根目錄，或用絕對路徑）。**改了程式碼一定要加 `--build`**，否則會沿用舊 image。
 這個路徑或 `data/` 不存在時，`docker compose up` 會直接報錯 `bind source path does not exist`。這是刻意的：只有跟 field_calib 在同一台主機上，校正才會生效。
 
 如果讀寫不到校正檔案，Gateway 仍然會啟動，任務和回饋功能照常可用。校正頁會顯示錯誤，`GET /api/calib/state` 的 `error` 欄位會寫出原因。

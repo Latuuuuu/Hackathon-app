@@ -1,5 +1,5 @@
 # App Gateway + built web app in one image. Build from the repo root:
-#   docker compose -f docker/compose.yaml build
+#   docker compose build
 
 FROM node:22-slim AS web
 WORKDIR /web
