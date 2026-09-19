@@ -3,15 +3,17 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Path as PathParam, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import calib
 from .bt import BtClient, BtEngineError
-from .cloud import CloudError, Feedback, TaskRequest, make_cloud_client
+from pydantic import BaseModel, Field
+
+from .cloud import ChatRequest, CloudError, FeedbackRequest, ResetRequest, make_cloud_client
 from .config import Settings, get_settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -47,17 +49,54 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.exception_handler(CloudError)
     async def _cloud_down(_: Request, e: CloudError):
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=502)
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=e.status_code)
 
-    # ------------------------------------------------------------ tasks / BT
+    # ------------------------------------------------------------ cloud (Manta)
 
-    @app.post("/api/tasks")
-    async def submit_task(task: TaskRequest, request: Request):
-        return await request.app.state.cloud.submit_task(task)
+    MissionId = Annotated[str, PathParam(pattern=r"^[A-Za-z0-9_-]{1,100}$")]
+    RunId = Annotated[str, PathParam(pattern=r"^[A-Za-z0-9_.-]{1,100}$")]
 
-    @app.post("/api/feedback")
-    async def send_feedback(fb: Feedback, request: Request):
-        return await request.app.state.cloud.send_feedback(fb)
+    class ExecuteRequest(BaseModel):
+        prompt: str = Field(default="", max_length=4000)
+
+    @app.get("/api/cloud/health")
+    async def cloud_health(request: Request):
+        return await request.app.state.cloud.health()
+
+    @app.post("/api/chat")
+    async def chat(req: ChatRequest, request: Request):
+        return await request.app.state.cloud.chat(req)
+
+    @app.post("/api/sessions/reset")
+    async def reset_session(req: ResetRequest, request: Request):
+        return await request.app.state.cloud.reset(req)
+
+    @app.post("/api/missions/{mission_id}/execute")
+    async def execute_mission(mission_id: MissionId, req: ExecuteRequest, request: Request):
+        return await request.app.state.cloud.execute(mission_id, req.prompt)
+
+    @app.post("/api/missions/{mission_id}/cancel")
+    async def cancel_mission(mission_id: MissionId, request: Request):
+        try:
+            return await request.app.state.cloud.cancel(mission_id)
+        except CloudError as e:
+            # Stopping the robot must not depend on the cloud: fall back to bt_engine directly.
+            log.warning("cloud cancel failed (%s), cancelling on bt_engine", e)
+            code, body = await request.app.state.bt.cancel()
+            return JSONResponse({**body, "fallback": "bt_engine"}, status_code=code)
+
+    @app.post("/api/missions/{mission_id}/feedback")
+    async def mission_feedback(mission_id: MissionId, fb: FeedbackRequest, request: Request):
+        return await request.app.state.cloud.feedback(mission_id, fb)
+
+    @app.get("/api/runs/{run_id}/mission")
+    async def run_mission(run_id: RunId, request: Request):
+        rec = request.app.state.cloud.runs.get(run_id)
+        if rec is None:
+            raise HTTPException(404, "this run was not started from the app")
+        return rec
+
+    # ------------------------------------------------------------ BT engine
 
     def _passthrough(result: tuple[int, object]) -> JSONResponse:
         code, body = result
@@ -175,7 +214,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/health")
     async def health():
-        return {"ok": True, "cloud_mode": settings.cloud_mode, "mock_execute": settings.mock_execute}
+        return {
+            "ok": True,
+            "cloud_mode": settings.cloud_mode,
+            "cloud_url": settings.cloud_url if settings.cloud_mode == "http" else None,
+            "mock_execute": settings.mock_execute,
+        }
 
     # ------------------------------------------------------------ web app (SPA)
 

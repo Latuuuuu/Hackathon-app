@@ -16,12 +16,15 @@ class Settings(BaseSettings):
     bt_engine_token: str = ""
     bt_timeout_s: float = 5.0
 
-    # Cloud task server (LLM agent). "mock" logs locally until the real API is known.
+    # Cloud task server (Manta, APP_API.md). "http" = Manta at CLOUD_URL, "mock" = offline stand-in.
     cloud_mode: Literal["mock", "http"] = "mock"
     cloud_url: str = ""
     cloud_token: str = ""
-    cloud_timeout_s: float = 10.0
-    # Mock only: also send the demo tree to bt_engine. It moves the real robot, so off by default.
+    cloud_timeout_s: float = 20.0
+    cloud_chat_timeout_s: float = 240.0  # planning takes ~40 s, sometimes much more
+    cloud_pipeline_mode: Literal["hybrid", "direct", "compare"] = "hybrid"
+    cloud_allow_vision: bool = False
+    # Mock only: execute sends the demo tree to bt_engine. It moves the real robot, so off by default.
     mock_execute: bool = False
     mock_tree_file: str = ""
 

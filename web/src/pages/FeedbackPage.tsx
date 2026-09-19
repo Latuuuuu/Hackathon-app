@@ -1,12 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { api, noteText } from '../api/client'
-import type { BtStatus, GripForce } from '../api/types'
+import { ApiError, api, noteText } from '../api/client'
+import type { BtStatus, FeedbackResponse, GripForce, RunMission } from '../api/types'
 import { RunTimeline } from '../components/RunTimeline'
 import { StatusBadge } from '../components/StatusBadge'
 import { promptFor } from '../lib/store'
 import { usePolling } from '../lib/usePolling'
-import type { Tracking } from './TaskPage'
+import type { TaskPageState } from './TaskPage'
 
 const GRIP_OPTIONS: { value: GripForce; label: string }[] = [
   { value: 'too_weak', label: '太小（沒夾住／滑掉）' },
@@ -19,6 +19,7 @@ export function FeedbackPage() {
   const navigate = useNavigate()
   const [status, setStatus] = useState<BtStatus | null>(null)
   const [loadError, setLoadError] = useState('')
+  const [mission, setMission] = useState<RunMission | null | undefined>(undefined) // undefined = loading
 
   usePolling(
     async () => {
@@ -33,6 +34,11 @@ export function FeedbackPage() {
     !status || status.state === 'running',
   )
 
+  useEffect(() => {
+    api.runMission(runId).then(setMission, () => setMission(null))
+  }, [runId])
+
+  const prompt = mission?.prompt || promptFor(runId)
   const failed = status && status.state !== 'success' && status.state !== 'running'
 
   return (
@@ -50,8 +56,7 @@ export function FeedbackPage() {
         {status && (
           <>
             <p className="muted">
-              <code>{status.run_id}</code>・{status.elapsed_s?.toFixed(1)} 秒
-              {promptFor(runId) && <>・「{promptFor(runId)}」</>}
+              <code>{status.run_id}</code>・{status.elapsed_s?.toFixed(1)} 秒{prompt && <>・「{prompt}」</>}
             </p>
             {status.state === 'running' && <p>任務仍在執行中，結束後這裡會自動更新。</p>}
             {status.state === 'success' && <p className="ok-text">任務完成！請留下回饋，幫助機器人下次做得更好。</p>}
@@ -64,8 +69,14 @@ export function FeedbackPage() {
         )}
       </section>
 
-      {failed && <RetryForm status={status} runId={runId} onSent={(t) => navigate('/', { state: { tracking: t } })} />}
-      {status && status.state !== 'running' && <FeedbackForm status={status} />}
+      {failed && (
+        <RetryForm
+          status={status}
+          prompt={prompt}
+          onSend={(text) => navigate('/', { state: { send: text } satisfies TaskPageState })}
+        />
+      )}
+      {status && status.state !== 'running' && mission !== undefined && <FeedbackForm mission={mission} />}
     </div>
   )
 }
@@ -95,85 +106,85 @@ function FailureDetails({ status }: { status: BtStatus }) {
   )
 }
 
-function RetryForm({ status, runId, onSent }: { status: BtStatus; runId: string; onSent: (t: Tracking) => void }) {
-  const [prompt, setPrompt] = useState(promptFor(runId))
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [info, setInfo] = useState('')
+function failureSummary(status: BtStatus): string {
+  const reasons = status.notes.map(noteText).concat(status.error ? [status.error] : [])
+  if (status.state === 'canceled') return '上一次執行被中斷了。'
+  return reasons.length ? `上一次執行失敗，原因：${reasons.join('；')}` : '上一次執行失敗了。'
+}
 
-  async function submit(e: React.FormEvent) {
+function RetryForm({ status, prompt, onSend }: { status: BtStatus; prompt: string; onSend: (text: string) => void }) {
+  const [text, setText] = useState(prompt)
+
+  function submit(e: React.FormEvent) {
     e.preventDefault()
-    const text = prompt.trim()
-    if (!text) return
-    setBusy(true)
-    setError('')
-    try {
-      const since = Date.now()
-      const res = await api.submitTask({
-        prompt: text,
-        retry_of: { run_id: status.run_id, notes: status.notes.map(noteText).concat(status.error ? [status.error] : []) },
-      })
-      if (res.mock && !res.executed) {
-        setInfo('已記錄新指令（雲端為 mock 模式，沒有實際執行）。')
-      } else {
-        onSent({ prompt: text, baseline: status.run_id, since, runId: res.run_id })
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setBusy(false)
-    }
+    const t = text.trim()
+    if (t) onSend(`${t}\n\n（${failureSummary(status)}）`)
   }
 
   return (
     <section className="card">
       <h2>修改指令重來</h2>
-      <p className="muted">失敗原因會一併送給雲端，讓它重新規劃。</p>
+      <p className="muted">會在原本的對話中送出，並附上失敗原因，讓雲端重新規劃；規劃好之後一樣要按「確認執行」。</p>
       <form onSubmit={submit} className="stack">
-        <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} rows={3} maxLength={1000} placeholder="輸入新的指令" />
-        <button type="submit" className="primary" disabled={busy || !prompt.trim()}>
-          {busy ? '送出中…' : '重新發布'}
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} maxLength={3000} placeholder="輸入新的指令" />
+        <button type="submit" className="primary" disabled={!text.trim()}>
+          重新規劃
         </button>
       </form>
-      {info && <p className="info">{info}</p>}
-      {error && <p className="error">{error}</p>}
     </section>
   )
 }
 
-function FeedbackForm({ status }: { status: BtStatus }) {
+function FeedbackForm({ mission }: { mission: RunMission | null }) {
   const [grip, setGrip] = useState<GripForce | undefined>()
   const [rating, setRating] = useState<number | undefined>()
   const [comment, setComment] = useState('')
   const [busy, setBusy] = useState(false)
-  const [sent, setSent] = useState(false)
+  const [sent, setSent] = useState<FeedbackResponse | null>(null)
   const [error, setError] = useState('')
+
+  if (!mission) {
+    return (
+      <section className="card">
+        <h2>回饋</h2>
+        <p className="muted">這個任務不是從 App 確認執行的，找不到對應的雲端任務，所以無法送出回饋。</p>
+      </section>
+    )
+  }
+  const missionId = mission.mission_id
 
   async function submit(e: React.FormEvent) {
     e.preventDefault()
+    if (!rating) return
     setBusy(true)
     setError('')
     try {
-      await api.sendFeedback({
-        run_id: status.run_id,
-        outcome: status.state,
-        grip_force: grip,
-        rating,
-        comment: comment.trim(),
-      })
-      setSent(true)
+      setSent(await api.missionFeedback(missionId, { rating, grip_force: grip, comment: comment.trim() }))
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(
+        e instanceof ApiError && e.status === 409
+          ? '雲端還不能收這個任務的回饋（任務可能尚未結束），請稍後再試。'
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      )
     } finally {
       setBusy(false)
     }
   }
 
   if (sent) {
+    const p = sent.sent.parameters?.set_gripper_position
     return (
       <section className="card">
         <h2>回饋</h2>
         <p className="ok-text">謝謝！回饋已送出。</p>
+        {p !== undefined && sent.base_gripper_position !== null && (
+          <p className="muted">
+            夾爪建議值：{sent.base_gripper_position} → <b>{p}</b>（0 全開、100 全閉），下次類似任務會參考。
+          </p>
+        )}
+        {grip && p === undefined && <p className="muted">這次的行為樹沒有夾爪動作，所以沒有送出夾爪建議值。</p>}
       </section>
     )
   }
@@ -183,18 +194,9 @@ function FeedbackForm({ status }: { status: BtStatus }) {
       <h2>回饋</h2>
       <form onSubmit={submit} className="stack">
         <fieldset>
-          <legend>夾取力道</legend>
-          <div className="segmented">
-            {GRIP_OPTIONS.map((o) => (
-              <label key={o.value} className={grip === o.value ? 'on' : ''}>
-                <input type="radio" name="grip" value={o.value} checked={grip === o.value} onChange={() => setGrip(o.value)} />
-                {o.label}
-              </label>
-            ))}
-          </div>
-        </fieldset>
-        <fieldset>
-          <legend>整體滿意度</legend>
+          <legend>
+            整體滿意度 <span className="required">必填</span>
+          </legend>
           <div className="stars" role="radiogroup">
             {[1, 2, 3, 4, 5].map((n) => (
               <button
@@ -211,12 +213,23 @@ function FeedbackForm({ status }: { status: BtStatus }) {
             ))}
           </div>
         </fieldset>
+        <fieldset>
+          <legend>夾取力道</legend>
+          <div className="segmented">
+            {GRIP_OPTIONS.map((o) => (
+              <label key={o.value} className={grip === o.value ? 'on' : ''}>
+                <input type="radio" name="grip" value={o.value} checked={grip === o.value} onChange={() => setGrip(o.value)} />
+                {o.label}
+              </label>
+            ))}
+          </div>
+        </fieldset>
         <label className="stack">
           <span>其他意見</span>
-          <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} maxLength={2000} placeholder="例如：接近杯子時太快" />
+          <textarea value={comment} onChange={(e) => setComment(e.target.value)} rows={3} maxLength={4000} placeholder="例如：接近杯子時太快" />
         </label>
-        <button type="submit" className="primary" disabled={busy || (!grip && !rating && !comment.trim())}>
-          {busy ? '送出中…' : '送出回饋'}
+        <button type="submit" className="primary" disabled={busy || !rating}>
+          {busy ? '送出中…' : rating ? '送出回饋' : '請先選擇滿意度'}
         </button>
       </form>
       {error && <p className="error">{error}</p>}

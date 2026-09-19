@@ -77,64 +77,155 @@ def test_engine_down_is_502(client):
     assert r.status_code == 502 and "unreachable" in r.json()["error"]
 
 
-# ---------------------------------------------------------------- cloud mock
+# ---------------------------------------------------------------- cloud: helpers
 
-def test_mock_task_logs_and_does_not_execute(client, settings):
-    with respx.mock(assert_all_called=False) as mock:
-        exe = mock.post(f"{BT}/execute")
-        r = client.post("/api/tasks", json={"prompt": "把杯子拿過來"})
-        assert not exe.called
-    assert r.status_code == 200 and r.json()["executed"] is False
-    rec = json.loads((settings.data_dir / "tasks.jsonl").read_text().splitlines()[-1])
-    assert rec["prompt"] == "把杯子拿過來"
+def test_gripper_position_and_adjustment():
+    from app.cloud import adjusted_grip, gripper_position
+
+    chat = json.loads((FIXTURES / "manta_chat.json").read_text())
+    assert gripper_position(chat["candidate"]["bt_xml"]) == 80
+    assert gripper_position('<root><SetGripper position="0"/><SetGripper position="55.4"/></root>') == 55
+    assert gripper_position("<root><Sequence/></root>") is None
+    assert gripper_position("not xml") is None
+    assert adjusted_grip(80, "too_weak") == 90
+    assert adjusted_grip(80, "too_strong") == 70
+    assert adjusted_grip(80, "ok") == 80
+    assert adjusted_grip(95, "too_weak") == 100 and adjusted_grip(5, "too_strong") == 0
+    assert adjusted_grip(None, "too_weak") is None and adjusted_grip(80, None) is None
 
 
-def test_mock_task_executes_when_enabled(tmp_path, settings):
+# ---------------------------------------------------------------- cloud: mock
+
+def test_mock_chat_clarifies_then_plans(client):
+    r = client.post("/api/chat", json={"message": "杯子"}).json()
+    assert r["status"] == "NEED_MORE_INFO" and r["questions"] and not r["executable"]
+    r2 = client.post("/api/chat", json={"message": "找到杯子並夾起來", "session_id": r["session_id"]}).json()
+    assert r2["executable"] and r2["session_id"] == r["session_id"] and r2["gripper_position"] == 80
+
+
+def test_mock_execute_disabled_by_default(client):
+    mid = client.post("/api/chat", json={"message": "找到杯子並夾起來"}).json()["mission_id"]
+    r = client.post(f"/api/missions/{mid}/execute", json={"prompt": "x"})
+    assert r.status_code == 409 and "MOCK_EXECUTE" in r.json()["error"]
+
+
+def test_mock_execute_records_run_and_feedback(settings):
     settings.mock_execute = True
     with respx.mock:
         respx.post(f"{BT}/execute").mock(
             return_value=httpx.Response(202, json={"ok": True, "run_id": "run-7", "preempted_previous": False})
         )
         with TestClient(create_app(settings)) as c:
-            r = c.post("/api/tasks", json={"prompt": "grab cup", "retry_of": {"run_id": "run-6", "notes": ["x"]}})
-    assert r.json()["run_id"] == "run-7"
-
-
-def test_mock_execute_rejected_tree_is_502(settings):
-    settings.mock_execute = True
-    with respx.mock:
-        respx.post(f"{BT}/execute").mock(return_value=httpx.Response(422, json={"ok": False, "error": "bad"}))
-        with TestClient(create_app(settings)) as c:
-            r = c.post("/api/tasks", json={"prompt": "grab cup"})
-    assert r.status_code == 502 and "422" in r.json()["error"]
-
-
-def test_empty_prompt_rejected(client):
-    assert client.post("/api/tasks", json={"prompt": ""}).status_code == 422
-
-
-def test_feedback_logged(client, settings):
-    fb = {"run_id": "run-1", "outcome": "success", "grip_force": "too_strong", "rating": 4, "comment": "太用力"}
-    assert client.post("/api/feedback", json=fb).json()["ok"] is True
+            mid = c.post("/api/chat", json={"message": "找到杯子並夾起來"}).json()["mission_id"]
+            r = c.post(f"/api/missions/{mid}/execute", json={"prompt": "找到杯子並夾起來"}).json()
+            assert r["run_id"] == "run-7"
+            assert c.get("/api/runs/run-7/mission").json()["mission_id"] == mid
+            assert c.get("/api/runs/run-8/mission").status_code == 404
+            fb = c.post(f"/api/missions/{mid}/feedback", json={"rating": 4, "grip_force": "too_strong", "comment": "太緊"}).json()
+    assert fb["sent"] == {"rating": 4, "comment": "太緊", "parameters": {"set_gripper_position": 70}}
     rec = json.loads((settings.data_dir / "feedback.jsonl").read_text().splitlines()[-1])
-    assert rec["grip_force"] == "too_strong" and rec["comment"] == "太用力"
+    assert rec["parameters"]["set_gripper_position"] == 70
 
 
 def test_feedback_validation(client):
-    assert client.post("/api/feedback", json={"grip_force": "huge"}).status_code == 422
-    assert client.post("/api/feedback", json={"rating": 9}).status_code == 422
+    assert client.post("/api/missions/m1/feedback", json={"grip_force": "ok"}).status_code == 422  # rating required
+    assert client.post("/api/missions/m1/feedback", json={"rating": 9}).status_code == 422
+    assert client.post("/api/missions/m1/feedback", json={"rating": 3, "grip_force": "huge"}).status_code == 422
 
 
-def test_http_cloud_client(settings):
+def test_bad_ids_rejected(client):
+    assert client.post("/api/missions/..%2F..%2Fadmin/execute", json={}).status_code in (404, 422)
+    assert client.post("/api/missions/a%20b/cancel").status_code == 422
+    assert client.post("/api/chat", json={"message": ""}).status_code == 422
+
+
+# ---------------------------------------------------------------- cloud: Manta
+
+MANTA = "http://manta.test"
+
+
+@pytest.fixture
+def manta_settings(settings):
     settings.cloud_mode = "http"
-    settings.cloud_url = "http://cloud.test"
-    settings.cloud_token = "ct"
+    settings.cloud_url = MANTA
+    return settings
+
+
+def test_manta_chat_is_summarized(manta_settings):
+    chat = json.loads((FIXTURES / "manta_chat.json").read_text())
     with respx.mock:
-        route = respx.post("http://cloud.test/tasks").mock(return_value=httpx.Response(200, json={"task_id": "t1"}))
-        with TestClient(create_app(settings)) as c:
-            r = c.post("/api/tasks", json={"prompt": "hi"})
-    assert r.json() == {"ok": True, "task_id": "t1"}
-    assert route.calls.last.request.headers["Authorization"] == "Bearer ct"
+        route = respx.post(f"{MANTA}/api/chat").mock(return_value=httpx.Response(200, json=chat))
+        with TestClient(create_app(manta_settings)) as c:
+            r = c.post("/api/chat", json={"message": "找到杯子並夾起來", "session_id": "s-1"}).json()
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["message"] == "找到杯子並夾起來" and sent["session_id"] == "s-1"
+    assert sent["pipeline_mode"] == "hybrid" and sent["options"] == {"allow_vision": False}
+    assert r["executable"] and r["mission_id"] == chat["candidate"]["mission_id"]
+    assert r["session_id"] == chat["session_id"] and r["gripper_position"] == 80
+    assert [s["action"] for s in r["steps"]] == ["VisualizeObject", "NavigateToDetectedObject", "SetGripper"]
+    assert "rag_context" not in r  # the huge candidate is not forwarded
+
+
+def test_manta_need_more_info(manta_settings):
+    reply = {"session_id": "s-2", "candidate": {"status": "NEED_MORE_INFO", "message": "要拿哪一個？", "questions": ["哪個杯子？"]}}
+    with respx.mock:
+        respx.post(f"{MANTA}/api/chat").mock(return_value=httpx.Response(200, json=reply))
+        with TestClient(create_app(manta_settings)) as c:
+            r = c.post("/api/chat", json={"message": "拿杯子"}).json()
+    assert r["status"] == "NEED_MORE_INFO" and r["questions"] == ["哪個杯子？"] and not r["executable"]
+
+
+@pytest.mark.parametrize("execute_reply,status_reply", [
+    ({"ok": True, "run_id": "run-3"}, None),                                   # run_id in the reply
+    ({"ok": True, "execution": {"engine": {"run_id": "run-3"}}}, None),        # nested
+    ({"ok": True}, {"execution": {"run_id": "run-3", "state": "running"}}),     # only in status
+])
+def test_manta_execute_finds_run_id(manta_settings, execute_reply, status_reply):
+    with respx.mock:
+        respx.post(f"{MANTA}/api/missions/m-1/engine/execute").mock(return_value=httpx.Response(200, json=execute_reply))
+        respx.get(f"{MANTA}/api/missions/m-1/engine/status").mock(return_value=httpx.Response(200, json=status_reply or {}))
+        with TestClient(create_app(manta_settings)) as c:
+            r = c.post("/api/missions/m-1/execute", json={"prompt": "拿杯子"}).json()
+            rec = c.get("/api/runs/run-3/mission").json()
+    assert r["run_id"] == "run-3" and rec["mission_id"] == "m-1" and rec["prompt"] == "拿杯子"
+
+
+def test_manta_errors_pass_through(manta_settings):
+    with respx.mock:
+        respx.post(f"{MANTA}/api/missions/nope/engine/execute").mock(
+            return_value=httpx.Response(404, json={"detail": "Mission not found"}))
+        respx.post(f"{MANTA}/api/missions/m-1/feedback").mock(
+            return_value=httpx.Response(409, json={"detail": "execution not terminal"}))
+        respx.get(f"{MANTA}/api/missions/m-1").mock(return_value=httpx.Response(200, json={"bt_xml": None}))
+        respx.post(f"{MANTA}/api/chat").mock(side_effect=httpx.ConnectError("down"))
+        with TestClient(create_app(manta_settings)) as c:
+            r404 = c.post("/api/missions/nope/execute", json={})
+            r409 = c.post("/api/missions/m-1/feedback", json={"rating": 3})
+            r502 = c.post("/api/chat", json={"message": "hi"})
+    assert r404.status_code == 404 and "Mission not found" in r404.json()["error"]
+    assert r409.status_code == 409
+    assert r502.status_code == 502 and "unreachable" in r502.json()["error"]
+
+
+def test_manta_feedback_uses_mission_tree(manta_settings):
+    mission = json.loads((FIXTURES / "manta_mission.json").read_text())
+    with respx.mock:
+        respx.get(f"{MANTA}/api/missions/m-1").mock(return_value=httpx.Response(200, json=mission))
+        fb = respx.post(f"{MANTA}/api/missions/m-1/feedback").mock(return_value=httpx.Response(200, json={"ok": True}))
+        with TestClient(create_app(manta_settings)) as c:
+            r = c.post("/api/missions/m-1/feedback", json={"rating": 5, "grip_force": "too_weak"}).json()
+    assert json.loads(fb.calls.last.request.content) == {
+        "rating": 5, "comment": "", "parameters": {"set_gripper_position": 90}}
+    assert r["base_gripper_position"] == 80
+
+
+def test_manta_cancel_falls_back_to_engine(manta_settings):
+    with respx.mock:
+        respx.post(f"{MANTA}/api/missions/m-1/engine/cancel").mock(side_effect=httpx.ConnectError("down"))
+        bt = respx.post(f"{BT}/cancel").mock(return_value=httpx.Response(200, json={"ok": True, "was_running": True}))
+        with TestClient(create_app(manta_settings)) as c:
+            r = c.post("/api/missions/m-1/cancel").json()
+    assert bt.called and r["fallback"] == "bt_engine" and r["was_running"] is True
 
 
 # ---------------------------------------------------------------- calibration

@@ -7,7 +7,7 @@
    │ REST / MJPEG（同源，port 8000）
    ▼
 App Gateway (FastAPI + rclpy)
-   ├─ /api/tasks, /api/feedback ─▶ 雲端任務 server（LLM agent）  ※ 目前 mock
+   ├─ /api/chat, /api/missions/* ─▶ 雲端任務 server Manta（APP_API.md）
    ├─ /api/bt/*                 ─▶ bt_engine（mc_main_nav，HTTP，帶 X-BT-Token）
    └─ /api/calib/*              ─▶ field_calib_node（ROS2 Trigger + overlay 影像 + YAML）
 ```
@@ -18,9 +18,9 @@ App Gateway (FastAPI + rclpy)
 
 | 頁面 | 內容 |
 |---|---|
-| 任務 `/` | 輸入 prompt 發布；即時顯示 BT 狀態、目前動作、執行紀錄；中斷任務；最近任務列表 |
+| 任務 `/` | 和 Manta 對話規劃任務（資訊不足時會追問）→ 規劃好後顯示步驟與夾爪值，按「確認執行」才會讓機器人動；即時顯示 BT 狀態、目前動作、執行紀錄；中斷任務；最近任務列表 |
 | 校正 `/calibration` | ① 輸入桌子長、寬、張數（可忽略被擋住的桌緣）→ ② 即時畫面確認桌子入鏡，按開始校正後顯示逐輪桌緣偵測疊圖 → ③ 結果：通過/未通過、採用率、重投影誤差、相機外參、各桌緣品質、最終疊圖 |
-| 回饋 `/feedback/:runId` | 任務結束後自動進入。失敗時列出原因（`notes`、`last_leaf_failure`、`error`），可修改 prompt 重來（失敗原因一併送雲端）；夾取力道（太小／剛好／太大）、滿意度、文字意見 |
+| 回饋 `/feedback/:runId` | 任務結束後自動進入。失敗時列出原因（`notes`、`last_leaf_failure`、`error`），可修改指令在原對話重新規劃（附上失敗原因）；滿意度（必填）、夾取力道（太小／剛好／太大 → 以這次行為樹的夾爪值 +10／不變／−10 送給 Manta）、文字意見 |
 
 ## 部署（定位 server 那台）
 
@@ -71,9 +71,10 @@ cd web && npm install && npm run dev
 | 變數 | 說明 |
 |---|---|
 | `BT_ENGINE_URL` / `BT_ENGINE_TOKEN` | bt_engine 位址與 token。區網 `http://192.168.50.125:8090`，公開 `https://mcpc.taile84e23.ts.net` |
-| `CLOUD_MODE` | `mock`：prompt／回饋寫進 `data/tasks.jsonl`、`data/feedback.jsonl`。`http`：轉送到 `CLOUD_URL` |
-| `CLOUD_URL` / `CLOUD_TOKEN` | 雲端任務 server（`Authorization: Bearer`） |
-| `MOCK_EXECUTE` | mock 模式下是否把 demo 行為樹送到 bt_engine。**會讓真的機器人動**，預設關閉 |
+| `CLOUD_MODE` | `http`：接 Manta。`mock`：離線替身，對話與回饋寫進 `data/*.jsonl` |
+| `CLOUD_URL` / `CLOUD_TOKEN` | Manta 位址（目前 `http://210.61.209.139:45343`）；token 目前不需要 |
+| `CLOUD_PIPELINE_MODE` / `CLOUD_ALLOW_VISION` / `CLOUD_CHAT_TIMEOUT_S` | 送給 `/api/chat` 的 `pipeline_mode`（預設 hybrid）、`options.allow_vision`、規劃逾時秒數（預設 240） |
+| `MOCK_EXECUTE` | mock 模式下按「確認執行」是否把 demo 行為樹送到 bt_engine。**會讓真的機器人動**，預設關閉 |
 | `CALIB_MODE` | `auto`（有 rclpy 就用 ros）／`ros`／`mock` |
 | `FIELD_FILE` / `CALIB_OUTPUT_DIR` | 桌子設定檔、校正輸出資料夾（docker compose 已設好） |
 
@@ -81,8 +82,13 @@ cd web && npm install && npm run dev
 
 | Method | Path | 說明 |
 |---|---|---|
-| POST | `/api/tasks` | `{prompt, retry_of?: {run_id, notes[]}}` → 雲端 |
-| POST | `/api/feedback` | `{run_id, outcome, grip_force: too_weak\|ok\|too_strong, rating 1-5, comment}` → 雲端 |
+| POST | `/api/chat` | `{message, session_id?}` → Manta `/api/chat`，回傳精簡後的 `{session_id, status, message, questions, mission_id, executable, goal, steps, gripper_position, bt_xml}` |
+| POST | `/api/sessions/reset` | 開新對話 |
+| POST | `/api/missions/{id}/execute` | `{prompt}` → Manta execute，回傳 `{run_id}` 並記下 run → mission 對應 |
+| POST | `/api/missions/{id}/cancel` | Manta cancel；Manta 連不上時改直接叫 bt_engine `/cancel` |
+| POST | `/api/missions/{id}/feedback` | `{rating 1-5（必填）, comment, grip_force: too_weak\|ok\|too_strong}` → Manta，夾爪值由 Gateway 換算 |
+| GET | `/api/runs/{run_id}/mission` | 這個 run 對應的 mission（只有從 App 執行的才有） |
+| GET | `/api/cloud/health` | Manta 是否正常 |
 | GET | `/api/bt/status[/{run_id}]` | bt_engine `/status` 原樣轉送（`?trace=full`） |
 | GET | `/api/bt/runs`、`/api/bt/health` | 同上 |
 | POST | `/api/bt/cancel` | 中斷目前的行為樹 |
@@ -103,7 +109,7 @@ cd web && npm run build               # 型別檢查 + 打包
 
 ## 待辦與限制
 
-- **雲端任務 server 的 API 還不知道。** 目前用 mock，`HttpCloudClient` 暫定 `POST /tasks`、`POST /feedback`。拿到真正的介面後只需要改 [gateway/app/cloud.py](gateway/app/cloud.py)。
-- **雲端不回傳 BT `run_id`。** 發布任務後，App 把「送出後第一個新出現的 run」當成這次的任務。如果同時有別人在送行為樹，可能會抓錯。雲端若能回傳 `run_id`，App 會直接使用。
+- **Manta execute 的回傳格式還沒實測**（會讓機器人動）。Gateway 會在 execute 回應和 `engine/status` 裡找 bt_engine 的 `run_id`；找不到時退回「執行後第一個新出現的 run」，同時有別人送樹可能抓錯。第一次實際執行的回應會記在 `data/manta_execute.jsonl`。
+- **對話紀錄存在各瀏覽器**（localStorage），換裝置會看不到先前對話；Manta 端的 session 仍在。
 - **沒有真正的桌面遮罩。** 校正畫面用 `field_calib_node` 的 overlay 影像（投影桌緣 + 偵測邊點）代替。要真的 mask，需要在定位 repo 新增 topic。
 - **`/cancel` 會停掉 bt_engine 上任何正在跑的樹**，包括別的 client 送的。

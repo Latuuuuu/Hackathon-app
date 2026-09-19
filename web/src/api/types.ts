@@ -35,27 +35,57 @@ export interface RunSummary {
   started_at: number
 }
 
-export interface TaskRequest {
-  prompt: string
-  retry_of?: { run_id: string; notes: string[] }
-}
-
-export interface TaskResponse {
-  ok: boolean
-  task_id?: string
-  run_id?: string
-  mock?: boolean
-  executed?: boolean
-}
-
 export type GripForce = 'too_weak' | 'ok' | 'too_strong'
 
-export interface Feedback {
-  run_id?: string
-  outcome: BtState | 'unknown'
-  grip_force?: GripForce
-  rating?: number
+export interface PlanStep {
+  action: string
+  arguments: Record<string, unknown>
+  objective: string
+}
+
+/** Manta /api/chat, trimmed by the gateway. */
+export interface ChatReply {
+  session_id: string | null
+  status: string | null // SUCCESS | NEED_MORE_INFO | ...
+  message: string
+  questions: string[]
+  missing_capabilities: string[]
+  mission_id: string | null
+  executable: boolean
+  goal: string
+  steps: PlanStep[]
+  gripper_position: number | null
+  bt_xml: string | null
+}
+
+export interface ExecuteResponse {
+  ok: boolean
+  mission_id: string
+  run_id: string | null
+}
+
+export interface RunMission {
+  mission_id: string
+  prompt: string
+  t: number
+}
+
+export interface MissionFeedback {
+  rating: number
   comment?: string
+  grip_force?: GripForce
+}
+
+export interface FeedbackResponse {
+  ok: boolean
+  sent: { rating: number; comment: string; parameters?: { set_gripper_position: number } }
+  base_gripper_position: number | null
+}
+
+export interface CloudHealth {
+  ok: boolean
+  mode: 'mock' | 'http'
+  version?: string
 }
 
 export interface FieldConfig {

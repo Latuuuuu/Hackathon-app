@@ -3,11 +3,14 @@ import type {
   CalibResult,
   CalibRunResponse,
   CalibState,
-  Feedback,
+  ChatReply,
+  CloudHealth,
+  ExecuteResponse,
+  FeedbackResponse,
   FieldConfig,
+  MissionFeedback,
+  RunMission,
   RunSummary,
-  TaskRequest,
-  TaskResponse,
 } from './types'
 
 export class ApiError extends Error {
@@ -55,8 +58,18 @@ function errorMessage(data: unknown): string | undefined {
 }
 
 export const api = {
-  submitTask: (req: TaskRequest) => call<TaskResponse>('POST', '/api/tasks', req),
-  sendFeedback: (fb: Feedback) => call<{ ok: boolean }>('POST', '/api/feedback', fb),
+  cloudHealth: () => call<CloudHealth>('GET', '/api/cloud/health'),
+  chat: (message: string, sessionId: string | null) =>
+    call<ChatReply>('POST', '/api/chat', { message, session_id: sessionId }),
+  resetSession: (sessionId: string | null) =>
+    call<{ session_id: string }>('POST', '/api/sessions/reset', { session_id: sessionId }),
+  execute: (missionId: string, prompt: string) =>
+    call<ExecuteResponse>('POST', `/api/missions/${encodeURIComponent(missionId)}/execute`, { prompt }),
+  cancelMission: (missionId: string) =>
+    call<{ ok: boolean; was_running?: boolean }>('POST', `/api/missions/${encodeURIComponent(missionId)}/cancel`),
+  missionFeedback: (missionId: string, fb: MissionFeedback) =>
+    call<FeedbackResponse>('POST', `/api/missions/${encodeURIComponent(missionId)}/feedback`, fb),
+  runMission: (runId: string) => call<RunMission>('GET', `/api/runs/${encodeURIComponent(runId)}/mission`),
 
   btStatus: (runId?: string, fullTrace = false) =>
     call<BtStatus>('GET', `/api/bt/status${runId ? `/${encodeURIComponent(runId)}` : ''}${fullTrace ? '?trace=full' : ''}`),

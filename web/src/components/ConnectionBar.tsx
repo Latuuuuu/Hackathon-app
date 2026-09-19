@@ -16,6 +16,7 @@ function Dot({ light, label, title }: { light: Light; label: string; title: stri
 export function ConnectionBar() {
   const [bt, setBt] = useState<{ light: Light; msg: string }>({ light: 'unknown', msg: '檢查中' })
   const [calib, setCalib] = useState<CalibState | null>(null)
+  const [cloud, setCloud] = useState<{ light: Light; msg: string }>({ light: 'unknown', msg: '檢查中' })
 
   usePolling(async () => {
     try {
@@ -23,6 +24,16 @@ export function ConnectionBar() {
       setBt({ light: 'ok', msg: 'BT engine 連線正常' })
     } catch (e) {
       setBt({ light: 'bad', msg: e instanceof Error ? e.message : String(e) })
+    }
+    try {
+      const h = await api.cloudHealth()
+      setCloud(
+        h.mode === 'mock'
+          ? { light: 'mock', msg: '雲端為 mock 模式（沒有連 Manta）' }
+          : { light: h.ok ? 'ok' : 'bad', msg: h.ok ? `Manta 連線正常（${h.version ?? ''}）` : 'Manta 回報異常' },
+      )
+    } catch (e) {
+      setCloud({ light: 'bad', msg: e instanceof Error ? e.message : String(e) })
     }
     try {
       setCalib(await api.calibState())
@@ -44,6 +55,7 @@ export function ConnectionBar() {
 
   return (
     <div className="conn">
+      <Dot light={cloud.light} label="雲端" title={cloud.msg} />
       <Dot light={bt.light} label="BT" title={bt.msg} />
       <Dot light={calibLight} label="校正" title={calibMsg} />
     </div>
