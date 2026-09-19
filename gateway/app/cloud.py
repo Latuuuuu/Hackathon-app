@@ -90,6 +90,17 @@ def find_key(obj: Any, key: str) -> Any:
     return None
 
 
+def as_text(item: Any) -> str:
+    """Manta sends some lists as strings and some as objects, e.g. {"field", "question"}."""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        for key in ("question", "message", "description", "name", "text"):
+            if isinstance(item.get(key), str):
+                return item[key]
+    return json.dumps(item, ensure_ascii=False)
+
+
 def summarize_candidate(session_id: str | None, candidate: dict[str, Any]) -> dict[str, Any]:
     """The browser only needs a small part of Manta's (very large) candidate."""
     plan = candidate.get("compact_semantic_plan") or {}
@@ -98,14 +109,18 @@ def summarize_candidate(session_id: str | None, candidate: dict[str, Any]) -> di
     return {
         "session_id": session_id,
         "status": candidate.get("status"),
-        "message": candidate.get("message") or "",
-        "questions": candidate.get("questions") or [],
-        "missing_capabilities": candidate.get("missing_capabilities") or [],
+        "message": as_text(candidate.get("message") or ""),
+        "questions": [as_text(q) for q in candidate.get("questions") or []],
+        "missing_capabilities": [as_text(c) for c in candidate.get("missing_capabilities") or []],
         "mission_id": mission_id,
         "executable": bool(mission_id and bt_xml and candidate.get("status") == "SUCCESS"),
-        "goal": plan.get("goal_description") or "",
+        "goal": as_text(plan.get("goal_description") or ""),
         "steps": [
-            {"action": s.get("action"), "arguments": s.get("arguments") or {}, "objective": s.get("objective") or ""}
+            {
+                "action": as_text(s.get("action") or ""),
+                "arguments": s.get("arguments") if isinstance(s.get("arguments"), dict) else {},
+                "objective": as_text(s.get("objective") or ""),
+            }
             for s in plan.get("steps") or []
         ],
         "gripper_position": gripper_position(bt_xml),

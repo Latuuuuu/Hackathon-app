@@ -7,6 +7,16 @@ const STATUS_LABEL: Record<string, string> = {
   NEED_MORE_INFO: '需要補充資訊',
 }
 
+/** Replies saved by older versions may still hold objects such as {field, question}. */
+function text(item: unknown): string {
+  if (typeof item === 'string') return item
+  if (item && typeof item === 'object') {
+    const o = item as Record<string, unknown>
+    for (const k of ['question', 'message', 'description', 'name', 'text']) if (typeof o[k] === 'string') return o[k] as string
+  }
+  return JSON.stringify(item)
+}
+
 function Elapsed({ since }: { since: number }) {
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
@@ -21,22 +31,22 @@ function AgentBubble({ reply }: { reply: ChatReply }) {
     return (
       <>
         <div>已規劃好任務，請在下方確認後執行。</div>
-        {reply.goal && <small className="muted">目標：{reply.goal}</small>}
+        {reply.goal && <small className="muted">目標：{text(reply.goal)}</small>}
       </>
     )
   }
   return (
     <>
-      <div>{reply.message || '（沒有說明）'}</div>
+      <div>{text(reply.message) || '（沒有說明）'}</div>
       {reply.questions.length > 0 && (
         <ul className="questions">
           {reply.questions.map((q, i) => (
-            <li key={i}>{q}</li>
+            <li key={i}>{text(q)}</li>
           ))}
         </ul>
       )}
       {reply.missing_capabilities.length > 0 && (
-        <small className="muted">機器人缺少的能力：{reply.missing_capabilities.join('、')}</small>
+        <small className="muted">機器人缺少的能力：{reply.missing_capabilities.map(text).join('、')}</small>
       )}
       {reply.status && reply.status !== 'NEED_MORE_INFO' && (
         <small className="muted">狀態：{STATUS_LABEL[reply.status] ?? reply.status}</small>

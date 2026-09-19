@@ -167,12 +167,19 @@ def test_manta_chat_is_summarized(manta_settings):
 
 
 def test_manta_need_more_info(manta_settings):
-    reply = {"session_id": "s-2", "candidate": {"status": "NEED_MORE_INFO", "message": "要拿哪一個？", "questions": ["哪個杯子？"]}}
+    # Real shape seen from Manta 6.4.0: questions are objects, not strings.
+    reply = {"session_id": "s-2", "candidate": {
+        "status": "NEED_MORE_INFO", "message": "要拿哪一個？",
+        "questions": [{"field": "object_name", "question": "哪個杯子？"}, "放哪裡？", {"field": "x"}],
+        "missing_capabilities": [{"name": "open_door"}],
+    }}
     with respx.mock:
         respx.post(f"{MANTA}/api/chat").mock(return_value=httpx.Response(200, json=reply))
         with TestClient(create_app(manta_settings)) as c:
             r = c.post("/api/chat", json={"message": "拿杯子"}).json()
-    assert r["status"] == "NEED_MORE_INFO" and r["questions"] == ["哪個杯子？"] and not r["executable"]
+    assert r["status"] == "NEED_MORE_INFO" and not r["executable"]
+    assert r["questions"] == ["哪個杯子？", "放哪裡？", '{"field": "x"}']
+    assert r["missing_capabilities"] == ["open_door"]
 
 
 @pytest.mark.parametrize("execute_reply,status_reply", [

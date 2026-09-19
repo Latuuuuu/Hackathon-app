@@ -56,3 +56,11 @@ export function saveChat(state: ChatState): void {
   )
   write(CHAT, { ...state, messages })
 }
+
+export function clearChat(): void {
+  try {
+    localStorage.removeItem(CHAT)
+  } catch {
+    /* storage unavailable */
+  }
+}
