@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { CalibResult, FieldConfig } from '../api/types'
 import { MjpegView } from '../components/MjpegView'
 import { type CalibStep, useCalibration } from '../lib/calibration'
@@ -57,8 +58,18 @@ function StepProgress({ step }: { step: CalibStep }) {
   )
 }
 
+const VIEWS: { key: 'camera' | 'overlay'; label: string }[] = [
+  { key: 'camera', label: '相機畫面（即時）' },
+  { key: 'overlay', label: '桌緣疊圖（約每秒 1 張）' },
+]
+
 export function CalibrationPage() {
   const { step, field, current, run, running, error, setStep, setField, saveField, start } = useCalibration()
+  const [view, setView] = useState<'camera' | 'overlay'>(running ? 'overlay' : 'camera')
+  // The detection overlay is what matters while calibrating; the camera view is for framing.
+  useEffect(() => {
+    setView(running ? 'overlay' : 'camera')
+  }, [running])
 
   return (
     <div className="page">
@@ -96,11 +107,25 @@ export function CalibrationPage() {
               </span>
             )}
           </p>
-          <MjpegView stream={running ? 'calib' : 'live'} alt={running ? '校正中偵測到的桌緣' : '即時桌緣疊圖'} />
+          <div className="segmented view-toggle" role="radiogroup" aria-label="畫面">
+            {VIEWS.map((v) => (
+              <label key={v.key} className={view === v.key ? 'on' : ''}>
+                <input type="radio" name="calib-view" checked={view === v.key} onChange={() => setView(v.key)} />
+                {v.label}
+              </label>
+            ))}
+          </div>
+          <MjpegView
+            stream={view === 'camera' ? 'camera' : running ? 'calib' : 'live'}
+            alt={view === 'camera' ? '相機即時畫面' : running ? '校正中偵測到的桌緣' : '桌緣疊圖'}
+          />
           <p className="muted legend">
-            {running
-              ? '校正中：每一輪會縮小搜尋範圍。綠點是採用的桌緣點，其他顏色是捨棄的點（對比不足、落在範圍邊界等）；灰線為本輪前的模型，彩色線為本輪結果。切換到其他頁面不會中斷校正。'
-              : '即時畫面：線條為依目前外參投影的桌緣，應與實際桌緣重合。'}
+            {view === 'camera'
+              ? '相機即時畫面：用來確認整張桌子都在畫面裡。'
+              : running
+                ? '校正中：每一輪會縮小搜尋範圍。綠點是採用的桌緣點，其他顏色是捨棄的點（對比不足、落在範圍邊界等）；灰線為本輪前的模型，彩色線為本輪結果。'
+                : '桌緣疊圖：線條為依目前外參投影的桌緣，應與實際桌緣重合。由校正程式計算，約每秒更新一次。'}
+            {running && ' 切換到其他頁面不會中斷校正。'}
           </p>
           <div className="row between">
             <button onClick={() => setStep('field')} disabled={running}>

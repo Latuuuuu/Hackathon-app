@@ -3,7 +3,8 @@
 - Table size: field_calib_node re-reads its field YAML on every calibration, so the gateway
   writes FIELD_FILE and field_calib must be launched with field_file:=<same file>.
 - Trigger: std_srvs/Trigger on CALIB_SERVICE (blocks for several seconds).
-- Images: overlay topics (sensor_msgs/Image) re-encoded as JPEG for MJPEG streaming.
+- Images: overlay topics (sensor_msgs/Image, ~1 Hz) re-encoded as JPEG, plus the camera's own
+  compressed stream (30 Hz, throttled and shrunk) for framing the table; all served as MJPEG.
 - Result: <output_dir>/<YYYYmmdd_HHMMSS>/cam_tf.yaml for every run, <output_dir>/cam_tf.yaml when it passed.
 """
 import asyncio
@@ -24,7 +25,7 @@ log = logging.getLogger(__name__)
 
 RUN_DIR_RE = re.compile(r"^\d{8}_\d{6}$")
 SEGMENT_RE = re.compile(r"^(far|near|left_\d+|right_\d+|seam_\d+)$")
-STREAMS = ("live", "calib")
+STREAMS = ("live", "calib", "camera")
 DEBUG_IMAGES = ("final_overlay", "final_strips", "final_residuals")
 
 
@@ -221,7 +222,7 @@ class RosCalibBackend(CalibBackend):
         import rclpy
         from rclpy.executors import MultiThreadedExecutor
         from rclpy.qos import qos_profile_sensor_data
-        from sensor_msgs.msg import Image
+        from sensor_msgs.msg import CompressedImage, Image
         from std_srvs.srv import Trigger
 
         rclpy.init()
@@ -232,6 +233,11 @@ class RosCalibBackend(CalibBackend):
             self._node.create_subscription(
                 Image, topic, lambda msg, s=stream: self._on_image(s, msg), qos_profile_sensor_data
             )
+        self._camera_period = 1.0 / max(0.5, self.settings.camera_stream_fps)
+        self._camera_last = 0.0
+        self._node.create_subscription(
+            CompressedImage, self.settings.calib_camera_topic, self._on_camera, qos_profile_sensor_data
+        )
         self._executor = MultiThreadedExecutor()
         self._executor.add_node(self._node)
         self._thread = threading.Thread(target=self._executor.spin, daemon=True, name="ros-spin")
@@ -265,6 +271,30 @@ class RosCalibBackend(CalibBackend):
                 self.frames.put(stream, jpeg.tobytes())
         except Exception:  # never kill the executor thread over one bad frame
             log.exception("failed to encode %s frame", stream)
+
+    def _on_camera(self, msg) -> None:
+        """Camera JPEG (30 Hz): keep camera_stream_fps of them, shrunk to camera_stream_max_width."""
+        import cv2
+        import numpy as np
+
+        now = time.monotonic()
+        # 10% slack: at 30 Hz input, 15 fps must keep every 2nd frame, not every 3rd.
+        if now - self._camera_last < self._camera_period * 0.9:
+            return
+        self._camera_last = now
+        try:
+            data = bytes(msg.data)
+            img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                return
+            max_w = self.settings.camera_stream_max_width
+            if img.shape[1] > max_w:
+                img = cv2.resize(img, (max_w, round(img.shape[0] * max_w / img.shape[1])), interpolation=cv2.INTER_AREA)
+            ok, jpeg = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, self.settings.stream_jpeg_quality])
+            if ok:
+                self.frames.put("camera", jpeg.tobytes())
+        except Exception:
+            log.exception("failed to re-encode camera frame")
 
     def connected(self) -> bool:
         return bool(self._client and self._client.service_is_ready())

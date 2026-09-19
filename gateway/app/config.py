@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     calib_service: str = "/field_calib_node/calibrate"
     calib_live_topic: str = "/field_calib_node/live/overlay"
     calib_calib_topic: str = "/field_calib_node/calib/overlay"
+    # Plain camera view for framing the table (field_calib overlays are only ~1 Hz).
+    calib_camera_topic: str = "/camera/camera/color/image_raw/compressed"
+    camera_stream_fps: float = 15.0
+    camera_stream_max_width: int = 960
     calib_timeout_s: float = 120.0
     stream_jpeg_quality: int = 70
 

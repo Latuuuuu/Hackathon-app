@@ -200,3 +200,5 @@ tr.m-bad td { color: var(--danger); }
 .progress-labels li.done { color: var(--text); }
 .progress-labels li.done::before { content: '✓ '; color: var(--ok); }
 .progress-labels li.on { color: var(--primary); font-weight: 600; }
+.view-toggle { margin-top: 4px; }
+.view-toggle label { padding: 8px 6px; font-size: 0.85rem; }

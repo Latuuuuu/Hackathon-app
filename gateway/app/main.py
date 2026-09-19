@@ -193,14 +193,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(path, media_type="image/png")
 
     @app.get("/api/calib/snapshot/{stream}")
-    async def calib_snapshot(stream: Literal["live", "calib"], request: Request):
+    async def calib_snapshot(stream: Literal["live", "calib", "camera"], request: Request):
         frame = request.app.state.calib.frames.get(stream)
         if not frame:
             raise HTTPException(503, f"no {stream} frame yet")
         return Response(frame[2], media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
     @app.get("/api/calib/stream/{stream}")
-    async def calib_stream(stream: Literal["live", "calib"], request: Request):
+    async def calib_stream(stream: Literal["live", "calib", "camera"], request: Request):
         frames = request.app.state.calib.frames
         if not frames.get(stream):
             raise HTTPException(503, f"no {stream} frame yet")
@@ -218,7 +218,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         + frame[2]
                         + b"\r\n"
                     )
-                await asyncio.sleep(0.1)
+                await asyncio.sleep(0.03)
 
         return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 

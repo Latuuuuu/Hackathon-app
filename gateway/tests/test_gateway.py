@@ -308,7 +308,7 @@ def test_latest_run_and_frame_counts(client, settings):
     _seed_run(settings, "20260919_095507")
     r = client.get("/api/calib/runs/latest").json()
     assert r["run"] == "20260919_095507" and r["success"] is True and r["result"]["quality"]["rms_px"] == 0.6126
-    assert client.get("/api/calib/state").json()["frame_counts"] == {"live": 0, "calib": 0}
+    assert client.get("/api/calib/state").json()["frame_counts"] == {"live": 0, "calib": 0, "camera": 0}
 
 
 def test_mock_run_reports_new_run_only(settings):
@@ -329,6 +329,7 @@ def test_mock_run_reports_new_run_only(settings):
 def test_stream_without_frames_is_503(client):
     assert client.get("/api/calib/stream/live").status_code == 503
     assert client.get("/api/calib/snapshot/calib").status_code == 503
+    assert client.get("/api/calib/stream/camera").status_code == 503
     assert client.get("/api/calib/stream/other").status_code == 422
 
 

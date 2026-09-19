@@ -79,6 +79,7 @@ cd web && npm install && npm run dev
 | `MOCK_EXECUTE` | mock 模式下按「確認執行」是否把 demo 行為樹送到 bt_engine。**會讓真的機器人動**，預設關閉 |
 | `CALIB_MODE` | `auto`（有 rclpy 就用 ros）／`ros`／`mock` |
 | `FIELD_FILE` / `CALIB_OUTPUT_DIR` | 桌子設定檔、校正輸出資料夾（docker compose 已設好） |
+| `CALIB_CAMERA_TOPIC` / `CAMERA_STREAM_FPS` / `CAMERA_STREAM_MAX_WIDTH` | 校正頁「相機畫面」的來源（預設 `/camera/camera/color/image_raw/compressed`）、輸出幀率（預設 15）、縮圖寬度（預設 960 px） |
 
 ## Gateway API
 
@@ -98,7 +99,7 @@ cd web && npm install && npm run dev
 | POST | `/api/calib/run` | 觸發校正（阻塞到結束），回傳 `{success, message, run, result}` |
 | GET | `/api/calib/result` | 目前生效的 `cam_tf.yaml` |
 | GET | `/api/calib/state` | 模式、是否連到 field_calib_node、影像最後更新時間 |
-| GET | `/api/calib/stream/{live\|calib}` | MJPEG 串流 |
+| GET | `/api/calib/stream/{live\|calib\|camera}` | MJPEG 串流（camera 為相機原始畫面，約 15 fps；live／calib 為 field_calib 疊圖，約 1 fps） |
 | GET | `/api/calib/snapshot/{live\|calib}` | 單張 JPEG |
 | GET | `/api/calib/image/{final_overlay\|final_strips\|final_residuals}?run=` | 校正輸出的 PNG |
 

@@ -131,6 +131,6 @@ export interface CalibState {
   connected: boolean
   running_since: number | null
   latest_run: string | null
-  streams: Record<'live' | 'calib', number | null>
-  frame_counts?: Record<'live' | 'calib', number>
+  streams: Record<'live' | 'calib' | 'camera', number | null>
+  frame_counts?: Record<'live' | 'calib' | 'camera', number>
 }
