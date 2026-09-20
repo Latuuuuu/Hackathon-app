@@ -124,7 +124,7 @@ function RetryForm({ status, prompt, onSend }: { status: BtStatus; prompt: strin
   return (
     <section className="card">
       <h2>修改指令重來</h2>
-      <p className="muted">會在原本的對話中送出，並附上失敗原因，讓雲端重新規劃；規劃好之後一樣要按「確認執行」。</p>
+      <p className="muted">會在原本的對話中送出，並附上失敗原因，讓雲端重新規劃。規劃成功後機器人會直接開始執行。</p>
       <form onSubmit={submit} className="stack">
         <textarea value={text} onChange={(e) => setText(e.target.value)} rows={3} maxLength={3000} placeholder="輸入新的指令" />
         <button type="submit" className="primary" disabled={!text.trim()}>
@@ -147,7 +147,7 @@ function FeedbackForm({ mission }: { mission: RunMission | null }) {
     return (
       <section className="card">
         <h2>回饋</h2>
-        <p className="muted">這個任務不是從 App 確認執行的，找不到對應的雲端任務，所以無法送出回饋。</p>
+        <p className="muted">這個任務不是從 App 發布的，找不到對應的雲端任務，所以無法送出回饋。</p>
       </section>
     )
   }
